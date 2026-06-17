@@ -170,8 +170,109 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # validate the selected item before building the outfit prompt
+    if not isinstance(new_item, dict) or not new_item.get("title"):
+        return (
+            "I could not create an outfit because the selected listing is missing. "
+            "Please search for an item first."
+        )
+
+    # keep the item summary limited to fields that help with styling
+    item_summary = (
+        f"Item: {new_item.get('title')}\n"
+        f"Category: {new_item.get('category', 'unknown')}\n"
+        f"Description: {new_item.get('description', 'No description provided')}\n"
+        f"Size: {new_item.get('size', 'unknown')}\n"
+        f"Colors: {', '.join(new_item.get('colors') or []) or 'unknown'}\n"
+        f"Style tags: {', '.join(new_item.get('style_tags') or []) or 'none'}"
+    )
+
+    # use general styling guidance when the wardrobe has no usable pieces
+    wardrobe_items = []
+    if isinstance(wardrobe, dict):
+        wardrobe_items = [
+            item for item in wardrobe.get("items", []) if isinstance(item, dict)
+        ]
+
+    if wardrobe_items:
+        wardrobe_lines = []
+        for item in wardrobe_items:
+            colors = ", ".join(item.get("colors") or []) or "unknown colors"
+            styles = ", ".join(item.get("style_tags") or []) or "no style tags"
+            notes = item.get("notes") or "no notes"
+            wardrobe_lines.append(
+                f"- {item.get('name', 'Unnamed item')} "
+                f"({item.get('category', 'unknown category')}; "
+                f"colors: {colors}; styles: {styles}; notes: {notes})"
+            )
+        wardrobe_text = "\n".join(wardrobe_lines)
+        wardrobe_instruction = (
+            "Use the user's wardrobe items when they fit. Do not invent owned "
+            "items that are not listed here."
+        )
+    else:
+        wardrobe_text = "No usable wardrobe items were provided."
+        wardrobe_instruction = (
+            "Give general styling advice. Do not claim the user owns specific "
+            "pieces. Suggest common bottoms, shoes, layers, or accessories."
+        )
+
+    # keep the prompt focused on one useful styling answer
+    prompt = f"""
+You are helping style one secondhand listing for a user.
+
+Selected listing:
+{item_summary}
+
+User wardrobe:
+{wardrobe_text}
+
+Instructions:
+- Return only the outfit suggestion.
+- Suggest one or two complete outfit combinations.
+- Make the outfit specific to the selected listing.
+- Include practical details like layering, shoes, accessories, color balance, or fit.
+- {wardrobe_instruction}
+- Keep the response concise and natural.
+""".strip()
+
+    # return a clear message when the model request cannot be completed
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You give concise outfit suggestions and return only "
+                        "the suggestion text."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.7,
+            max_tokens=350,
+        )
+        outfit_text = response.choices[0].message.content.strip()
+    except ValueError:
+        return (
+            "I could not generate an outfit because the Groq API key is not "
+            "configured. Add GROQ_API_KEY to the local .env file and try again."
+        )
+    except Exception:
+        return (
+            "I found the item, but the outfit service could not complete the "
+            "request. Please try again in a moment."
+        )
+
+    if not outfit_text:
+        return (
+            "I found the item, but the outfit suggestion came back empty. "
+            "Please try again."
+        )
+
+    return outfit_text
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
