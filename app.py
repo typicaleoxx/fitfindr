@@ -20,6 +20,31 @@ from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 # ── query handler ─────────────────────────────────────────────────────────────
 
+def _format_listing(listing: dict | None) -> str:
+    """Format a selected listing for the first output panel."""
+    if not isinstance(listing, dict):
+        return "No listing is available."
+
+    lines = [listing.get("title") or "Untitled listing"]
+
+    if listing.get("price") is not None:
+        lines.append(f"Price: ${listing['price']:.2f}")
+    if listing.get("size"):
+        lines.append(f"Size: {listing['size']}")
+    if listing.get("platform"):
+        lines.append(f"Platform: {str(listing['platform']).title()}")
+    if listing.get("condition"):
+        lines.append(f"Condition: {str(listing['condition']).title()}")
+    if listing.get("brand"):
+        lines.append(f"Brand: {listing['brand']}")
+    if listing.get("colors"):
+        lines.append(f"Colors: {', '.join(listing['colors'])}")
+    if listing.get("style_tags"):
+        lines.append(f"Style: {', '.join(listing['style_tags'])}")
+
+    return "\n".join(lines)
+
+
 def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     """
     Called by Gradio when the user submits a query.
@@ -43,8 +68,47 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    # reject an empty request before starting the agent workflow
+    query = (user_query or "").strip()
+    if not query:
+        return (
+            "Enter a clothing request before starting the search. Include "
+            "details such as the item, size, or maximum price.",
+            "",
+            "",
+        )
+
+    # choose the starter wardrobe state from the existing radio options
+    if wardrobe_choice == "Empty wardrobe (new user)":
+        wardrobe = get_empty_wardrobe()
+    else:
+        wardrobe = get_example_wardrobe()
+
+    session = run_agent(query=query, wardrobe=wardrobe)
+    listing_text = _format_listing(session.get("selected_item"))
+    outfit_text = (session.get("outfit_suggestion") or "").strip()
+    fit_card_text = (session.get("fit_card") or "").strip()
+    error_text = (session.get("error") or "").strip()
+
+    # clear later outputs when the agent stops on an earlier failure
+    if error_text:
+        if not session.get("selected_item"):
+            return error_text, "", ""
+        if not fit_card_text:
+            if "fit card" in error_text.lower():
+                return listing_text, outfit_text, error_text
+            return listing_text, error_text, ""
+        if not outfit_text:
+            return listing_text, error_text, ""
+        if "fit card" in error_text.lower():
+            return listing_text, outfit_text, error_text
+
+    # return values in the same order as the gradio output components
+    return (
+        listing_text,
+        outfit_text or "No outfit suggestion is available.",
+        fit_card_text or "No fit card is available.",
+    )
 
 
 # ── interface ─────────────────────────────────────────────────────────────────
