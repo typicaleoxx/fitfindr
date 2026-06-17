@@ -18,6 +18,8 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -46,6 +48,66 @@ def _new_session(query: str, wardrobe: dict) -> dict:
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract a simple description, optional size, and optional budget from a
+    natural language query.
+    """
+    query_text = query or ""
+    parsed_query = query_text
+
+    price_match = re.search(r"(?:under|below|less than)\s*\$?\s*(\d+(?:\.\d+)?)", query_text, re.I)
+    if not price_match:
+        price_match = re.search(r"\$\s*(\d+(?:\.\d+)?)", query_text)
+    max_price = float(price_match.group(1)) if price_match else None
+    if price_match:
+        parsed_query = parsed_query.replace(price_match.group(0), " ")
+
+    size_match = re.search(
+        r"(?:in\s+)?size\s+([a-z0-9./-]+)|\b(?:us\s*)?(\d+(?:\.\d+)?)\b",
+        parsed_query,
+        re.I,
+    )
+    size = None
+    if size_match:
+        size = (size_match.group(1) or size_match.group(2)).upper()
+        parsed_query = parsed_query.replace(size_match.group(0), " ")
+
+    # clean search wording without trying to fully understand natural language
+    parsed_query = re.sub(
+        r"\b(i am|i'm|looking for|searching for|find me|want|need|please|usually wear|mostly wear)\b",
+        " ",
+        parsed_query,
+        flags=re.I,
+    )
+    parsed_query = re.sub(r"[,.!?]", " ", parsed_query)
+    description = " ".join(parsed_query.split()) or query_text.strip()
+
+    return {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+
+
+def _tool_text_failed(value: str | None) -> bool:
+    """
+    Return True when a tool output is empty or clearly reports a failure.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return True
+
+    value_lower = value.lower()
+    failure_signals = [
+        "could not",
+        "not configured",
+        "missing",
+        "came back empty",
+        "service could not complete",
+    ]
+    return any(signal in value_lower for signal in failure_signals)
+
 
 def run_agent(query: str, wardrobe: dict) -> dict:
     """
@@ -92,9 +154,58 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # initialize one session object so each tool can pass its result forward
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # parse only the filters this starter app expects
+    session["parsed"] = _parse_query(query)
+
+    search_results = search_listings(
+        description=session["parsed"]["description"],
+        size=session["parsed"]["size"],
+        max_price=session["parsed"]["max_price"],
+    )
+    session["search_results"] = search_results
+
+    # stop here because later tools require a valid selected listing
+    if not search_results:
+        session["error"] = (
+            "I could not find any listings that match that description, size, "
+            "and budget. Try increasing the budget, removing the size filter, "
+            "or using a broader description."
+        )
+        return session
+
+    # store the exact selected item before passing it to the outfit tool
+    session["selected_item"] = session["search_results"][0]
+
+    outfit_suggestion = suggest_outfit(
+        new_item=session["selected_item"],
+        wardrobe=session["wardrobe"],
+    )
+    session["outfit_suggestion"] = outfit_suggestion
+
+    # prevent fit card generation when the outfit tool reports a failure
+    if _tool_text_failed(outfit_suggestion):
+        session["error"] = (
+            "I found a listing, but I could not create a usable outfit "
+            "suggestion. Check the wardrobe information and try again."
+        )
+        return session
+
+    fit_card = create_fit_card(
+        outfit=session["outfit_suggestion"],
+        new_item=session["selected_item"],
+    )
+    session["fit_card"] = fit_card
+
+    # keep the completed outfit state even if caption generation fails
+    if _tool_text_failed(fit_card):
+        session["error"] = (
+            "I created the outfit suggestion, but I could not generate the fit "
+            "card. Please try the request again."
+        )
+
     return session
 
 
