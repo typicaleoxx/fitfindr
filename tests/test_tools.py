@@ -39,6 +39,17 @@ def test_impossible_search_returns_empty_list():
     assert results == []
 
 
+def test_search_handles_data_loading_failure(monkeypatch):
+    def broken_load_listings():
+        raise OSError("data unavailable")
+
+    monkeypatch.setattr(tools, "load_listings", broken_load_listings)
+
+    results = search_listings("graphic tee")
+
+    assert results == []
+
+
 def test_results_respect_max_price():
     results = search_listings("vintage", max_price=20)
 
@@ -207,6 +218,7 @@ def test_suggest_outfit_request_exception_returns_failure_message(monkeypatch):
     result = suggest_outfit(selected_graphic_tee(), get_example_wardrobe())
 
     assert "outfit service could not complete the request" in result
+    assert "GROQ_API_KEY" in result
     assert "try again" in result.lower()
 
 
@@ -341,8 +353,8 @@ def test_create_fit_card_request_exception_returns_failure_message(monkeypatch):
 
     result = create_fit_card("Style it with denim.", selected_graphic_tee())
 
-    assert "fit card service could not complete the request" in result
-    assert "try again" in result.lower()
+    assert "fit card service could not finish" in result
+    assert "Try generating the fit card again" in result
 
 
 def test_create_fit_card_empty_model_response_returns_clear_message(monkeypatch):

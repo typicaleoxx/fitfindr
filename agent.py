@@ -188,8 +188,8 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     # prevent fit card generation when the outfit tool reports a failure
     if _tool_text_failed(outfit_suggestion):
         session["error"] = (
-            "I found a listing, but I could not create a usable outfit "
-            "suggestion. Check the wardrobe information and try again."
+            "I found a listing, but the outfit service could not complete the "
+            "request. Check that GROQ_API_KEY is configured and try again."
         )
         return session
 
@@ -202,8 +202,8 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     # keep the completed outfit state even if caption generation fails
     if _tool_text_failed(fit_card):
         session["error"] = (
-            "I created the outfit suggestion, but I could not generate the fit "
-            "card. Please try the request again."
+            "The listing and outfit are ready, but the fit card service could "
+            "not finish. Try generating the fit card again."
         )
 
     return session

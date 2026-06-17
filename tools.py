@@ -95,8 +95,11 @@ def search_listings(
     requested_size = size.strip().lower() if size and size.strip() else None
     requested_price = max_price if max_price is not None else None
 
-    # load the original listing dicts so the returned structure stays unchanged
-    listings = load_listings()
+    # return no matches if the listing data cannot be loaded
+    try:
+        listings = load_listings()
+    except Exception:
+        return []
     scored_listings = []
 
     for index, listing in enumerate(listings):
@@ -263,7 +266,7 @@ Instructions:
     except Exception:
         return (
             "I found the item, but the outfit service could not complete the "
-            "request. Please try again in a moment."
+            "request. Check that GROQ_API_KEY is configured and try again."
         )
 
     if not outfit_text:
@@ -378,8 +381,8 @@ Instructions:
         )
     except Exception:
         return (
-            "The outfit is ready, but the fit card service could not complete "
-            "the request. Please try again in a moment."
+            "The listing and outfit are ready, but the fit card service could "
+            "not finish. Try generating the fit card again."
         )
 
     if not fit_card_text:

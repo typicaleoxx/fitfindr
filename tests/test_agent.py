@@ -156,7 +156,8 @@ def test_outfit_failure_stops_before_fit_card(monkeypatch):
     assert session["selected_item"] is selected_item
     assert session["outfit_suggestion"].startswith("I could not")
     assert session["fit_card"] is None
-    assert "could not create a usable outfit suggestion" in session["error"]
+    assert "outfit service could not complete the request" in session["error"]
+    assert "GROQ_API_KEY" in session["error"]
 
 
 def test_empty_outfit_result_stops_before_fit_card(monkeypatch):
@@ -177,7 +178,7 @@ def test_empty_outfit_result_stops_before_fit_card(monkeypatch):
 
     assert fit_card_called is False
     assert session["fit_card"] is None
-    assert "could not create a usable outfit suggestion" in session["error"]
+    assert "outfit service could not complete the request" in session["error"]
 
 
 def test_fit_card_failure_preserves_selected_item_and_outfit(monkeypatch):
@@ -197,7 +198,8 @@ def test_fit_card_failure_preserves_selected_item_and_outfit(monkeypatch):
     assert session["selected_item"] is selected_item
     assert session["outfit_suggestion"] is outfit_text
     assert session["fit_card"].startswith("The fit card service could not")
-    assert "could not generate the fit card" in session["error"]
+    assert "fit card service could not finish" in session["error"]
+    assert "Try generating the fit card again" in session["error"]
 
 
 def test_empty_fit_card_result_sets_error(monkeypatch):
@@ -210,7 +212,7 @@ def test_empty_fit_card_result_sets_error(monkeypatch):
     session = agent.run_agent("vintage graphic tee", {"items": []})
 
     assert session["fit_card"] == ""
-    assert "could not generate the fit card" in session["error"]
+    assert "fit card service could not finish" in session["error"]
 
 
 def test_original_query_stays_in_session(monkeypatch):
@@ -246,3 +248,24 @@ def test_each_run_uses_clean_session_state(monkeypatch):
     assert second_session["selected_item"] is second_item
     assert first_session["search_results"] == [first_item]
     assert second_session["search_results"] == [second_item]
+
+
+def test_failure_after_success_does_not_reuse_stale_state(monkeypatch):
+    selected_item = sample_item("first")
+    search_results = [[selected_item], []]
+
+    def fake_search_listings(**kwargs):
+        return search_results.pop(0)
+
+    monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    first_session = agent.run_agent("first query", {"items": []})
+    second_session = agent.run_agent("designer ballgown", {"items": []})
+
+    assert first_session["selected_item"] is selected_item
+    assert second_session["selected_item"] is None
+    assert second_session["outfit_suggestion"] is None
+    assert second_session["fit_card"] is None
+    assert "could not find any listings" in second_session["error"]

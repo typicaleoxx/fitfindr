@@ -6,6 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 
 
+def test_importing_app_does_not_launch_gradio():
+    assert app.__name__ == "app"
+    assert hasattr(app, "build_interface")
+
+
 def sample_listing(**overrides):
     listing = {
         "id": "lst_test",
@@ -169,7 +174,10 @@ def test_outfit_failure_preserves_listing_and_clears_fit_card(monkeypatch):
             "wardrobe": wardrobe,
             "outfit_suggestion": None,
             "fit_card": None,
-            "error": "I found a listing, but I could not create a usable outfit suggestion.",
+            "error": (
+                "I found a listing, but the outfit service could not complete "
+                "the request. Check that GROQ_API_KEY is configured and try again."
+            ),
         }
 
     monkeypatch.setattr(app, "run_agent", fake_run_agent)
@@ -180,7 +188,8 @@ def test_outfit_failure_preserves_listing_and_clears_fit_card(monkeypatch):
     )
 
     assert "Faded Band Tee" in listing_output
-    assert "could not create a usable outfit suggestion" in outfit_output
+    assert "outfit service could not complete the request" in outfit_output
+    assert "GROQ_API_KEY" in outfit_output
     assert fit_card_output == ""
 
 
@@ -194,7 +203,10 @@ def test_fit_card_failure_preserves_listing_and_outfit(monkeypatch):
             "wardrobe": wardrobe,
             "outfit_suggestion": "Wear it with baggy jeans.",
             "fit_card": None,
-            "error": "I created the outfit suggestion, but I could not generate the fit card.",
+            "error": (
+                "The listing and outfit are ready, but the fit card service "
+                "could not finish. Try generating the fit card again."
+            ),
         }
 
     monkeypatch.setattr(app, "run_agent", fake_run_agent)
@@ -206,7 +218,8 @@ def test_fit_card_failure_preserves_listing_and_outfit(monkeypatch):
 
     assert "Faded Band Tee" in listing_output
     assert outfit_output == "Wear it with baggy jeans."
-    assert "could not generate the fit card" in fit_card_output
+    assert "fit card service could not finish" in fit_card_output
+    assert "Try generating the fit card again" in fit_card_output
 
 
 def test_missing_optional_listing_fields_do_not_crash(monkeypatch):
