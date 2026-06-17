@@ -8,12 +8,14 @@ Complete and test each tool before moving to agent.py.
 
 Tools:
     search_listings(description, size, max_price)  → list[dict]
+    compare_price(new_item, listings)              → dict
     suggest_outfit(new_item, wardrobe)              → str
     create_fit_card(outfit, new_item)               → str
 """
 
 import os
 import re
+from statistics import median
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -144,6 +146,225 @@ def search_listings(
 
     scored_listings.sort(key=lambda item: (-item[0], item[1], item[2]))
     return [listing for _, _, _, listing in scored_listings]
+
+
+# ── Tool 4: compare_price ────────────────────────────────────────────────────
+
+def _usable_price(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _normalized_set(value) -> set[str]:
+    if isinstance(value, list):
+        return {
+            str(item).strip().lower()
+            for item in value
+            if str(item).strip()
+        }
+    if isinstance(value, str) and value.strip():
+        return {value.strip().lower()}
+    return set()
+
+
+def _price_comparison_result(
+    item_price,
+    comparable_count,
+    average_price,
+    median_price,
+    price_difference,
+    percentage_difference,
+    assessment,
+    reason,
+    comparable_items,
+) -> dict:
+    return {
+        "item_price": item_price,
+        "comparable_count": comparable_count,
+        "average_price": average_price,
+        "median_price": median_price,
+        "price_difference": price_difference,
+        "percentage_difference": percentage_difference,
+        "assessment": assessment,
+        "reason": reason,
+        "comparable_items": comparable_items,
+    }
+
+
+def _insufficient_price_data(item_price, reason: str) -> dict:
+    return _price_comparison_result(
+        item_price=item_price,
+        comparable_count=0,
+        average_price=None,
+        median_price=None,
+        price_difference=None,
+        percentage_difference=None,
+        assessment="insufficient data",
+        reason=reason,
+        comparable_items=[],
+    )
+
+
+def _listing_similarity(new_item: dict, listing: dict) -> int:
+    score = 0
+
+    if (new_item.get("category") or "").lower() == (
+        listing.get("category") or ""
+    ).lower():
+        score += 8
+
+    shared_styles = _normalized_set(new_item.get("style_tags")) & _normalized_set(
+        listing.get("style_tags")
+    )
+    score += len(shared_styles) * 4
+
+    if (new_item.get("size") or "").strip().lower() == (
+        listing.get("size") or ""
+    ).strip().lower():
+        score += 3
+
+    new_brand = (new_item.get("brand") or "").strip().lower()
+    listing_brand = (listing.get("brand") or "").strip().lower()
+    if new_brand and new_brand == listing_brand:
+        score += 3
+
+    if (new_item.get("condition") or "").strip().lower() == (
+        listing.get("condition") or ""
+    ).strip().lower():
+        score += 2
+
+    shared_colors = _normalized_set(new_item.get("colors")) & _normalized_set(
+        listing.get("colors")
+    )
+    score += len(shared_colors)
+
+    return score
+
+
+def compare_price(new_item: dict, listings: list[dict] | None = None) -> dict:
+    """
+    Compare a selected listing price against similar mock listings.
+
+    Args:
+        new_item: Selected listing dict from the search results.
+        listings: Optional comparison pool. If omitted, all mock listings load
+                  from the local dataset.
+
+    Returns:
+        A structured price comparison dict with assessment, averages,
+        differences, and comparable listing summaries. Returns an
+        "insufficient data" assessment instead of raising for missing data.
+    """
+    item_price = None
+    if isinstance(new_item, dict) and _usable_price(new_item.get("price")):
+        item_price = float(new_item["price"])
+    else:
+        return _insufficient_price_data(
+            item_price=None,
+            reason="There is not enough comparable price data because the selected listing has no usable price.",
+        )
+
+    if listings is None:
+        try:
+            listings = load_listings()
+        except Exception:
+            return _insufficient_price_data(
+                item_price=item_price,
+                reason="There is not enough comparable price data because listings could not be loaded.",
+            )
+
+    if not isinstance(listings, list):
+        return _insufficient_price_data(
+            item_price=item_price,
+            reason="There is not enough comparable price data because the comparison listings are unavailable.",
+        )
+
+    selected_id = new_item.get("id")
+    scored_listings = []
+    for index, listing in enumerate(listings):
+        if not isinstance(listing, dict):
+            continue
+        if selected_id and listing.get("id") == selected_id:
+            continue
+        if not _usable_price(listing.get("price")):
+            continue
+
+        similarity_score = _listing_similarity(new_item, listing)
+        if similarity_score <= 0:
+            continue
+
+        scored_listings.append((similarity_score, index, listing))
+
+    scored_listings.sort(key=lambda item: (-item[0], item[1]))
+    top_comparables = scored_listings[:5]
+
+    if not top_comparables:
+        return _insufficient_price_data(
+            item_price=item_price,
+            reason="There is not enough comparable price data for this listing yet.",
+        )
+
+    comparable_prices = [float(listing["price"]) for _, _, listing in top_comparables]
+    average_price = round(sum(comparable_prices) / len(comparable_prices), 2)
+    median_price = round(float(median(comparable_prices)), 2)
+    price_difference = round(item_price - average_price, 2)
+    percentage_difference = round((price_difference / average_price) * 100, 2)
+
+    if percentage_difference <= -10:
+        assessment = "good deal"
+    elif percentage_difference > 10:
+        assessment = "above average"
+    else:
+        assessment = "fair price"
+
+    if price_difference < 0:
+        direction = "below"
+        difference_text = abs(price_difference)
+    elif price_difference > 0:
+        direction = "above"
+        difference_text = price_difference
+    else:
+        direction = "at"
+        difference_text = 0
+
+    if direction == "at":
+        reason = (
+            f"This listing is at the average price of "
+            f"{len(top_comparables)} comparable items, so it is classified as "
+            f"{assessment}."
+        )
+    else:
+        reason = (
+            f"This listing is ${difference_text:.2f} {direction} the average "
+            f"price of {len(top_comparables)} comparable items, so it is "
+            f"classified as {assessment}."
+        )
+
+    comparable_items = []
+    for similarity_score, _, listing in top_comparables:
+        comparable_items.append(
+            {
+                "id": listing.get("id"),
+                "title": listing.get("title"),
+                "price": float(listing["price"]),
+                "category": listing.get("category"),
+                "size": listing.get("size"),
+                "condition": listing.get("condition"),
+                "platform": listing.get("platform"),
+                "similarity_score": similarity_score,
+            }
+        )
+
+    return _price_comparison_result(
+        item_price=item_price,
+        comparable_count=len(comparable_items),
+        average_price=average_price,
+        median_price=median_price,
+        price_difference=price_difference,
+        percentage_difference=percentage_difference,
+        assessment=assessment,
+        reason=reason,
+        comparable_items=comparable_items,
+    )
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────

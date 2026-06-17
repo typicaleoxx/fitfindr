@@ -22,6 +22,20 @@ def sample_item(item_id="lst_test"):
     }
 
 
+def sample_price_comparison():
+    return {
+        "item_price": 24.0,
+        "comparable_count": 3,
+        "average_price": 28.0,
+        "median_price": 27.0,
+        "price_difference": -4.0,
+        "percentage_difference": -14.29,
+        "assessment": "good deal",
+        "reason": "This listing is below the average price.",
+        "comparable_items": [],
+    }
+
+
 def test_successful_interaction_calls_all_tools_once(monkeypatch):
     selected_item = sample_item()
     calls = []
@@ -29,6 +43,10 @@ def test_successful_interaction_calls_all_tools_once(monkeypatch):
     def fake_search_listings(**kwargs):
         calls.append("search")
         return [selected_item]
+
+    def fake_compare_price(new_item):
+        calls.append("compare")
+        return sample_price_comparison()
 
     def fake_suggest_outfit(new_item, wardrobe):
         calls.append("outfit")
@@ -39,16 +57,17 @@ def test_successful_interaction_calls_all_tools_once(monkeypatch):
         return "Graphic tee, baggy jeans, and chunky sneakers."
 
     monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "compare_price", fake_compare_price)
     monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
     monkeypatch.setattr(agent, "create_fit_card", fake_create_fit_card)
 
     session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
 
-    assert calls == ["search", "outfit", "fit_card"]
+    assert calls == ["search", "compare", "outfit", "fit_card"]
     assert session["error"] is None
 
 
-def test_search_result_state_flows_into_selected_item_and_outfit(monkeypatch):
+def test_search_result_state_flows_into_selected_item_compare_and_outfit(monkeypatch):
     selected_item = sample_item()
     seen = {}
 
@@ -60,10 +79,15 @@ def test_search_result_state_flows_into_selected_item_and_outfit(monkeypatch):
         seen["outfit_item"] = new_item
         return "Use the tee with denim."
 
+    def fake_compare_price(new_item):
+        seen["price_item"] = new_item
+        return sample_price_comparison()
+
     def fake_create_fit_card(outfit, new_item):
         return "Fit card text."
 
     monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "compare_price", fake_compare_price)
     monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
     monkeypatch.setattr(agent, "create_fit_card", fake_create_fit_card)
 
@@ -71,6 +95,8 @@ def test_search_result_state_flows_into_selected_item_and_outfit(monkeypatch):
 
     assert session["search_results"] == [selected_item]
     assert session["selected_item"] is selected_item
+    assert session["price_comparison"] == sample_price_comparison()
+    assert seen["price_item"] is session["selected_item"]
     assert seen["outfit_item"] is session["selected_item"]
     assert seen["search_kwargs"]["size"] == "M"
     assert seen["search_kwargs"]["max_price"] == 30.0
@@ -82,6 +108,7 @@ def test_outfit_state_flows_into_fit_card(monkeypatch):
     seen = {}
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(
         agent,
         "suggest_outfit",
@@ -103,12 +130,43 @@ def test_outfit_state_flows_into_fit_card(monkeypatch):
     assert session["fit_card"] == "Fit card text."
 
 
+def test_insufficient_price_data_does_not_stop_outfit_or_fit_card(monkeypatch):
+    selected_item = sample_item()
+    price_result = {
+        "item_price": 24.0,
+        "comparable_count": 0,
+        "average_price": None,
+        "median_price": None,
+        "price_difference": None,
+        "percentage_difference": None,
+        "assessment": "insufficient data",
+        "reason": "There is not enough comparable price data.",
+        "comparable_items": [],
+    }
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: price_result)
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("vintage graphic tee", {"items": []})
+
+    assert session["price_comparison"] is price_result
+    assert session["outfit_suggestion"] == "Outfit"
+    assert session["fit_card"] == "Card"
+    assert session["error"] is None
+
+
 def test_empty_search_returns_early_without_later_tools(monkeypatch):
     calls = []
 
     def fake_search_listings(**kwargs):
         calls.append("search")
         return []
+
+    def fake_compare_price(new_item):
+        calls.append("compare")
+        return sample_price_comparison()
 
     def fake_suggest_outfit(new_item, wardrobe):
         calls.append("outfit")
@@ -119,6 +177,7 @@ def test_empty_search_returns_early_without_later_tools(monkeypatch):
         return "Should not run"
 
     monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "compare_price", fake_compare_price)
     monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
     monkeypatch.setattr(agent, "create_fit_card", fake_create_fit_card)
 
@@ -127,6 +186,7 @@ def test_empty_search_returns_early_without_later_tools(monkeypatch):
     assert calls == ["search"]
     assert session["search_results"] == []
     assert session["selected_item"] is None
+    assert session["price_comparison"] is None
     assert session["outfit_suggestion"] is None
     assert session["fit_card"] is None
     assert "could not find any listings" in session["error"]
@@ -138,6 +198,7 @@ def test_outfit_failure_stops_before_fit_card(monkeypatch):
     calls = []
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
 
     def fake_suggest_outfit(new_item, wardrobe):
         calls.append("outfit")
@@ -165,6 +226,7 @@ def test_empty_outfit_result_stops_before_fit_card(monkeypatch):
     fit_card_called = False
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "   ")
 
     def fake_create_fit_card(outfit, new_item):
@@ -186,6 +248,7 @@ def test_fit_card_failure_preserves_selected_item_and_outfit(monkeypatch):
     outfit_text = "Use the tee with denim."
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: outfit_text)
     monkeypatch.setattr(
         agent,
@@ -206,6 +269,7 @@ def test_empty_fit_card_result_sets_error(monkeypatch):
     selected_item = sample_item()
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
     monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "")
 
@@ -220,6 +284,7 @@ def test_original_query_stays_in_session(monkeypatch):
     query = "vintage graphic tee under $30 size M"
 
     monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
     monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
 
@@ -237,6 +302,7 @@ def test_each_run_uses_clean_session_state(monkeypatch):
         return search_results.pop(0)
 
     monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
     monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
 
@@ -258,6 +324,7 @@ def test_failure_after_success_does_not_reuse_stale_state(monkeypatch):
         return search_results.pop(0)
 
     monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
     monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
     monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
 

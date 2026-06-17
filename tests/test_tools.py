@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tools
-from tools import create_fit_card, search_listings, suggest_outfit
+from tools import compare_price, create_fit_card, search_listings, suggest_outfit
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe, load_listings
 
 
@@ -104,6 +104,169 @@ def test_results_are_ordered_by_relevance_then_price_then_dataset_order():
     results = search_listings("graphic tee", max_price=30)
 
     assert [item["id"] for item in results[:3]] == ["lst_006", "lst_002", "lst_033"]
+
+
+def comparison_item(**overrides):
+    item = {
+        "id": "selected",
+        "title": "Vintage Graphic Tee",
+        "description": "Soft black graphic tee.",
+        "category": "tops",
+        "style_tags": ["vintage", "graphic tee"],
+        "size": "M",
+        "condition": "good",
+        "price": 20.0,
+        "colors": ["black"],
+        "brand": "Thread House",
+        "platform": "depop",
+    }
+    item.update(overrides)
+    return item
+
+
+def comparison_pool():
+    return [
+        comparison_item(id="selected", price=20.0),
+        comparison_item(id="same_style", price=30.0, title="Same Style Tee"),
+        comparison_item(id="same_brand", price=40.0, title="Same Brand Tee"),
+        comparison_item(
+            id="other_color",
+            price=50.0,
+            title="White Graphic Tee",
+            colors=["white"],
+            brand=None,
+        ),
+        comparison_item(
+            id="skirt",
+            price=12.0,
+            title="Vintage Skirt",
+            category="bottoms",
+            style_tags=["vintage"],
+        ),
+    ]
+
+
+def test_compare_price_returns_expected_fields_and_good_deal_assessment():
+    result = compare_price(comparison_item(), comparison_pool())
+
+    assert set(result.keys()) == {
+        "item_price",
+        "comparable_count",
+        "average_price",
+        "median_price",
+        "price_difference",
+        "percentage_difference",
+        "assessment",
+        "reason",
+        "comparable_items",
+    }
+    assert result["item_price"] == 20.0
+    assert result["comparable_count"] == 4
+    assert result["average_price"] == 33.0
+    assert result["median_price"] == 35.0
+    assert result["price_difference"] == -13.0
+    assert result["percentage_difference"] == -39.39
+    assert result["assessment"] == "good deal"
+    assert "below the average price" in result["reason"]
+
+
+def test_compare_price_excludes_selected_listing_by_id():
+    result = compare_price(comparison_item(), comparison_pool())
+    comparable_ids = [item["id"] for item in result["comparable_items"]]
+
+    assert "selected" not in comparable_ids
+
+
+def test_compare_price_includes_comparable_summaries_with_similarity_scores():
+    result = compare_price(comparison_item(), comparison_pool())
+    first_comparable = result["comparable_items"][0]
+
+    assert first_comparable == {
+        "id": "same_style",
+        "title": "Same Style Tee",
+        "price": 30.0,
+        "category": "tops",
+        "size": "M",
+        "condition": "good",
+        "platform": "depop",
+        "similarity_score": 25,
+    }
+
+
+def test_compare_price_limits_comparables_to_five_items():
+    pool = [
+        comparison_item(id=f"comp_{index}", price=25.0 + index)
+        for index in range(8)
+    ]
+
+    result = compare_price(comparison_item(), pool)
+
+    assert result["comparable_count"] == 5
+    assert len(result["comparable_items"]) == 5
+
+
+def test_compare_price_classifies_fair_and_above_average_prices():
+    fair_result = compare_price(
+        comparison_item(price=42.0),
+        [
+            comparison_item(id="comp_1", price=40.0),
+            comparison_item(id="comp_2", price=42.0),
+            comparison_item(id="comp_3", price=44.0),
+        ],
+    )
+    above_result = compare_price(
+        comparison_item(price=60.0),
+        [
+            comparison_item(id="comp_1", price=40.0),
+            comparison_item(id="comp_2", price=42.0),
+            comparison_item(id="comp_3", price=44.0),
+        ],
+    )
+
+    assert fair_result["assessment"] == "fair price"
+    assert above_result["assessment"] == "above average"
+
+
+def test_compare_price_returns_insufficient_data_for_missing_price():
+    result = compare_price(comparison_item(price=None), comparison_pool())
+
+    assert result["assessment"] == "insufficient data"
+    assert result["item_price"] is None
+    assert result["comparable_count"] == 0
+    assert result["average_price"] is None
+    assert result["comparable_items"] == []
+
+
+def test_compare_price_returns_insufficient_data_when_listings_cannot_load(monkeypatch):
+    def broken_load_listings():
+        raise OSError("data unavailable")
+
+    monkeypatch.setattr(tools, "load_listings", broken_load_listings)
+
+    result = compare_price(comparison_item())
+
+    assert result["assessment"] == "insufficient data"
+    assert "could not be loaded" in result["reason"]
+
+
+def test_compare_price_returns_insufficient_data_without_comparables():
+    result = compare_price(
+        comparison_item(),
+        [
+            comparison_item(
+                id="unrelated",
+                category="shoes",
+                style_tags=["minimal"],
+                size="8",
+                condition="excellent",
+                colors=["brown"],
+                brand=None,
+            )
+        ],
+    )
+
+    assert result["assessment"] == "insufficient data"
+    assert result["comparable_items"] == []
 
 
 class FakeCompletions:

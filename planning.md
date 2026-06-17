@@ -94,9 +94,38 @@ If `outfit` is empty or missing, the tool returns a descriptive error message st
 **What the workflow does after that failure:**
 The workflow checks the returned fit card string. If it is usable, it stores it in `session["fit_card"]` and returns the completed session. If it is empty or clearly an error message from missing outfit input, it sets `session["error"]`, leaves `session["fit_card"]` as `None` or the error string based on implementation choice, and returns the session.
 
+---
+
+### Tool 4: compare_price
+
+**Function signature:**
+`compare_price(new_item: dict, listings: list[dict] | None = None) -> dict`
+
+**Function name:**
+`compare_price`
+
+**Exact parameter names, types, and meanings:**
+- `new_item` (`dict`): The selected listing dict from `session["selected_item"]`. It contains the item price and listing attributes to compare against other secondhand listings.
+- `listings` (`list[dict] | None`): Optional list of listing dicts to use as the comparison pool. If it is `None`, the tool loads all mock listings with `load_listings()`.
+
+**Exact return type:**
+`dict`
+
+**Specific contents of the return value:**
+The function returns a price comparison dict with `item_price`, `comparable_count`, `average_price`, `median_price`, `price_difference`, `percentage_difference`, `assessment`, `reason`, and `comparable_items`. Each comparable item summary includes `id`, `title`, `price`, `category`, `size`, `condition`, `platform`, and `similarity_score`.
+
+**Normal behavior:**
+The tool compares the selected listing against other listings using category, style tags, size, brand, condition, and colors. Category has the highest weight, style tags have strong weight, size and brand have moderate weight, and condition and colors have smaller weight. The selected listing itself is excluded by matching `id`. The tool keeps the top three to five most similar listings with usable prices, calculates average price, median price, price difference, and percentage difference, then classifies the selected item as `good deal`, `fair price`, or `above average`.
+
+**Specific failure mode:**
+If `new_item` is missing a usable price, the listings cannot be loaded, or there are no comparable listings with prices, the tool returns a structured dict with `assessment` set to `"insufficient data"`, zero comparable count, `None` for calculated prices and differences, a clear `reason`, and an empty `comparable_items` list.
+
+**What the workflow does after that failure:**
+The workflow stores the returned dict in `session["price_comparison"]` and continues to `suggest_outfit`. Price comparison is helpful context, not a required blocker for styling or fit card generation.
+
 ### Additional Tools
 
-No additional tools are planned for the required version. Query parsing will happen inside `run_agent` before calling `search_listings`.
+The required version uses the first three tools. The stretch version adds `compare_price` as a fourth local tool. Query parsing will happen inside `run_agent` before calling `search_listings`.
 
 ## Planning Loop
 
@@ -115,14 +144,17 @@ The planning loop is implemented by `run_agent(query: str, wardrobe: dict) -> di
 8. The workflow stops on an empty result because there is no selected listing to pass into `suggest_outfit`, and creating an outfit or fit card without an item would make later outputs unreliable.
 9. If results exist, choose the first listing because `search_listings` sorts best matches first.
 10. Store that listing in `session["selected_item"]`.
-11. Pass the same stored listing into `suggest_outfit` by calling `suggest_outfit(new_item=session["selected_item"], wardrobe=session["wardrobe"])`.
-12. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
-13. If the outfit result is not usable, set `session["error"]` and return early.
-14. If usable, store it in `session["outfit_suggestion"]`.
-15. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
-16. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
-17. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
-18. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, outfit suggestion, and fit card are all available.
+11. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
+12. Store the returned dict in `session["price_comparison"]`.
+13. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
+14. Pass the same stored listing into `suggest_outfit` by calling `suggest_outfit(new_item=session["selected_item"], wardrobe=session["wardrobe"])`.
+15. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
+16. If the outfit result is not usable, set `session["error"]` and return early.
+17. If usable, store it in `session["outfit_suggestion"]`.
+18. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
+19. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
+20. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
+21. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, outfit suggestion, and fit card are all available.
 
 ## State Management
 
@@ -133,19 +165,21 @@ The actual session structure is created by `_new_session(query, wardrobe)` in `a
 | `query` | The original user query string. | Written when `_new_session` is called. | The query parser in `run_agent`. |
 | `parsed` | A dict containing extracted `description`, `size`, and `max_price`. | Written after query parsing. | `search_listings` call arguments. |
 | `search_results` | A list of listing dicts returned by `search_listings`. | Written right after `search_listings` returns. | The result check and selected item step. |
-| `selected_item` | The top listing dict chosen from `search_results[0]`. | Written only if search results are not empty. | `suggest_outfit` and `create_fit_card`. |
+| `selected_item` | The top listing dict chosen from `search_results[0]`. | Written only if search results are not empty. | `compare_price`, `suggest_outfit`, and `create_fit_card`. |
+| `price_comparison` | A dict returned by `compare_price` with price assessment, averages, differences, and comparable item summaries. | Written after `selected_item` is stored. | The app price output panel and tests. |
 | `wardrobe` | The wardrobe dict passed into `run_agent`, with an `items` list. | Written when `_new_session` is called. | `suggest_outfit`. |
 | `outfit_suggestion` | The non-empty string returned by `suggest_outfit`. | Written after outfit validation passes. | `create_fit_card` and the app output. |
 | `fit_card` | The caption string returned by `create_fit_card`. | Written after fit card validation passes. | The app output and final user response. |
 | `error` | `None` on success, or a user-facing message when the workflow stops early. | Written when search fails, outfit generation fails, fit card generation fails, or the planning loop is not implemented yet. | `app.handle_query`, CLI checks, and tests. |
 
-The user does not manually reenter the selected item or outfit suggestion. The workflow stores the selected listing once in `session["selected_item"]`, reuses that exact dict for both styling and caption generation, stores the outfit once in `session["outfit_suggestion"]`, and passes that exact string into `create_fit_card`.
+The user does not manually reenter the selected item, price comparison, or outfit suggestion. The workflow stores the selected listing once in `session["selected_item"]`, reuses that exact dict for price comparison, styling, and caption generation, stores the outfit once in `session["outfit_suggestion"]`, and passes that exact string into `create_fit_card`.
 
 ## Error Handling
 
 | Tool | Failure trigger | Tool response | Workflow decision | Specific user facing response | Suggested next action |
 |---|---|---|---|---|---|
 | `search_listings` | No listings match the parsed `description`, `size`, and `max_price`. | Returns `[]`. | Store `[]` in `session["search_results"]`, set `session["error"]`, return early, and do not call later tools. | `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.` | User should broaden the search, remove one filter, or try another item type. |
+| `compare_price` | The selected item has no usable price, listings cannot load, or no comparable listings have usable prices. | Returns a structured dict with `assessment` set to `"insufficient data"`. | Store the dict in `session["price_comparison"]` and continue to `suggest_outfit`. | `There is not enough comparable price data for this listing yet.` | User can still use the listing, outfit idea, and fit card. I should keep the output readable without blocking the workflow. |
 | `suggest_outfit` | `wardrobe["items"]` is empty or has too little useful information. | Returns a general styling suggestion for `new_item` instead of an empty string. | Store the non-empty suggestion and continue to `create_fit_card`. | `I do not have saved closet pieces for you yet, so I made a general styling idea for this item.` | User can keep going or later add wardrobe items for more personal suggestions. |
 | `suggest_outfit` | The text request raises an exception or returns unusable text. | Returns a clear fallback styling message if possible. | If fallback text is non-empty, store it and continue. If empty, set `session["error"]` and stop. | `I found a listing, but I could not generate an outfit idea right now. Try again, or use a simpler styling request.` | User should retry or simplify the request. I should check the API key and text request error handling. |
 | `create_fit_card` | `outfit` is empty or whitespace. | Returns a descriptive error message string and does not raise an exception. | Treat the missing outfit as a workflow error, set `session["error"]`, and return without a successful fit card. | `I found an item, but I need an outfit suggestion before I can make a fit card.` | I should rerun outfit generation before calling `create_fit_card`. |
@@ -178,6 +212,15 @@ Session state              Early return error branch
   |                         |
   | selected_item stored    | session["error"] set
   |                         | final session returned
+  v
+compare_price(new_item=selected_item)
+  |
+  | price comparison dict
+  v
+Session state
+  |
+  | price_comparison stored
+  | insufficient data continues
   v
 suggest_outfit(new_item=selected_item, wardrobe=session["wardrobe"])
   |
@@ -232,6 +275,10 @@ I will use all tool specifications, the planning loop section, and the error han
 
 I will use the finished implementation, README, implementation plan, and interaction walkthrough. I will update documentation with setup steps, environment variable requirements, example queries, how to run the app, and how to run tests. I will inspect that documentation matches the final code and does not promise stretch features that were not built. Verification should include running tests and launching the app locally. Documentation wording can be revised to match my voice.
 
+### Phase 8: Add price comparison stretch tool
+
+I will use the Tool 4 specification, the state table, and the app output contract. I will implement `compare_price` as a local deterministic function that does not call the network, ranks comparable listings with weighted similarity, excludes the selected listing by `id`, and returns a structured assessment dict. I will update `run_agent` to store `session["price_comparison"]` after selecting the item and before generating the outfit. I will add one readable price assessment panel to the interface without redesigning the rest of the app. Tests should verify scoring, calculations, insufficient data, agent state flow, and app formatting. I will review the implementation output against the plan, run the test suite, manually compare an actual listing, and launch the app to confirm the panel appears.
+
 ## Complete Interaction Walkthrough
 
 ### Happy path
@@ -276,16 +323,49 @@ I will use the finished implementation, README, implementation plan, and interac
 - Exact arguments: none.
 - Example return value: no tool return value.
 - State key updated: `session["selected_item"] = session["search_results"][0]`.
-- Next conditional decision: because `selected_item` is a listing dict, call `suggest_outfit`.
+- Next conditional decision: because `selected_item` is a listing dict, call `compare_price`.
 
-**Step 4: Suggest an outfit**
+**Step 4: Compare price**
+- Tool called: `compare_price`.
+- Exact arguments: `new_item=session["selected_item"]`.
+- Example return value:
+
+```python
+{
+    "item_price": 18.0,
+    "comparable_count": 4,
+    "average_price": 25.4,
+    "median_price": 24.0,
+    "price_difference": -7.4,
+    "percentage_difference": -29.13,
+    "assessment": "good deal",
+    "reason": "This listing is $7.40 below the average price of 4 comparable items.",
+    "comparable_items": [
+        {
+            "id": "lst_006",
+            "title": "Vintage Bootleg Graphic Tee",
+            "price": 24.0,
+            "category": "tops",
+            "size": "M",
+            "condition": "good",
+            "platform": "poshmark",
+            "similarity_score": 13,
+        }
+    ],
+}
+```
+
+- State key updated: `session["price_comparison"]`.
+- Next conditional decision: continue to outfit generation even if the assessment is `"insufficient data"`.
+
+**Step 5: Suggest an outfit**
 - Tool called: `suggest_outfit`.
 - Exact arguments: `new_item=session["selected_item"]`, `wardrobe=session["wardrobe"]`.
 - Example return value: `"Wear the Y2K Baby Tee with your baggy straight-leg jeans, chunky white sneakers, and black cropped zip hoodie. Add the black crossbody bag to keep the outfit casual and streetwear leaning."`
 - State key updated: `session["outfit_suggestion"]`.
 - Next conditional decision: because the outfit string is non-empty, call `create_fit_card`.
 
-**Step 5: Create the fit card**
+**Step 6: Create the fit card**
 - Tool called: `create_fit_card`.
 - Exact arguments: `outfit=session["outfit_suggestion"]`, `new_item=session["selected_item"]`.
 - Example return value: `"Found this Y2K Baby Tee - Butterfly Print on depop for $18, and it is going straight into a relaxed weekend fit. I would wear it with baggy denim, chunky white sneakers, a cropped hoodie, and a black crossbody for a soft vintage streetwear look."`
@@ -293,7 +373,7 @@ I will use the finished implementation, README, implementation plan, and interac
 - Next conditional decision: because the fit card is non-empty, return the final session.
 
 **Final user output:**
-The user sees the top listing details, the outfit suggestion, and the shareable fit card caption. `session["error"]` remains `None`.
+The user sees the top listing details, the price assessment, the outfit suggestion, and the shareable fit card caption. `session["error"]` remains `None`.
 
 ### No results path
 
@@ -316,4 +396,4 @@ The user sees the top listing details, the outfit suggestion, and the shareable 
 **Final user output:**
 `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.`
 
-`suggest_outfit` is not called. `create_fit_card` is not called. `session["selected_item"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.
+`compare_price`, `suggest_outfit`, and `create_fit_card` are not called. `session["selected_item"]`, `session["price_comparison"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.

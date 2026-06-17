@@ -3,7 +3,7 @@ app.py
 
 Gradio interface for FitFindr. The layout and wiring are already set up —
 your job is to fill in handle_query() so it calls run_agent() and maps
-the session results to the three output panels.
+the session results to the output panels.
 
 Run with:
     python app.py
@@ -45,7 +45,39 @@ def _format_listing(listing: dict | None) -> str:
     return "\n".join(lines)
 
 
-def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
+def _format_price_comparison(price_comparison: dict | None) -> str:
+    """Format the selected listing's price comparison for the output panel."""
+    if not isinstance(price_comparison, dict):
+        return "Price comparison is not available."
+
+    assessment = price_comparison.get("assessment") or "insufficient data"
+    lines = [f"Assessment: {assessment.title()}"]
+
+    item_price = price_comparison.get("item_price")
+    average_price = price_comparison.get("average_price")
+    median_price = price_comparison.get("median_price")
+    comparable_count = price_comparison.get("comparable_count", 0)
+    percentage_difference = price_comparison.get("percentage_difference")
+
+    if item_price is not None:
+        lines.append(f"Item price: ${item_price:.2f}")
+    if average_price is not None:
+        lines.append(f"Average comparable price: ${average_price:.2f}")
+    if median_price is not None:
+        lines.append(f"Median comparable price: ${median_price:.2f}")
+    lines.append(f"Comparable listings: {comparable_count}")
+    if percentage_difference is not None:
+        lines.append(f"Difference from average: {percentage_difference:+.2f}%")
+
+    reason = (price_comparison.get("reason") or "").strip()
+    if reason:
+        lines.append("")
+        lines.append(reason)
+
+    return "\n".join(lines)
+
+
+def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str]:
     """
     Called by Gradio when the user submits a query.
 
@@ -54,9 +86,9 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
         wardrobe_choice: Either "Example wardrobe" or "Empty wardrobe (new user)".
 
     Returns:
-        A tuple of three strings:
-            (listing_text, outfit_suggestion, fit_card)
-        Each string maps to one of the three output panels in the UI.
+        A tuple of four strings:
+            (listing_text, price_comparison, outfit_suggestion, fit_card)
+        Each string maps to one of the four output panels in the UI.
 
     TODO:
         1. Guard against an empty query (return early with an error message).
@@ -76,6 +108,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
             "details such as the item, size, or maximum price.",
             "",
             "",
+            "",
         )
 
     # choose the starter wardrobe state from the existing radio options
@@ -86,6 +119,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
 
     session = run_agent(query=query, wardrobe=wardrobe)
     listing_text = _format_listing(session.get("selected_item"))
+    price_text = _format_price_comparison(session.get("price_comparison"))
     outfit_text = (session.get("outfit_suggestion") or "").strip()
     fit_card_text = (session.get("fit_card") or "").strip()
     error_text = (session.get("error") or "").strip()
@@ -93,19 +127,20 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
     # clear later outputs when the agent stops on an earlier failure
     if error_text:
         if not session.get("selected_item"):
-            return error_text, "", ""
+            return error_text, "", "", ""
         if not fit_card_text:
             if "fit card" in error_text.lower():
-                return listing_text, outfit_text, error_text
-            return listing_text, error_text, ""
+                return listing_text, price_text, outfit_text, error_text
+            return listing_text, price_text, error_text, ""
         if not outfit_text:
-            return listing_text, error_text, ""
+            return listing_text, price_text, error_text, ""
         if "fit card" in error_text.lower():
-            return listing_text, outfit_text, error_text
+            return listing_text, price_text, outfit_text, error_text
 
     # return values in the same order as the gradio output components
     return (
         listing_text,
+        price_text,
         outfit_text or "No outfit suggestion is available.",
         fit_card_text or "No fit card is available.",
     )
@@ -151,6 +186,11 @@ Describe what you're looking for — include size and price if you want to filte
                 lines=8,
                 interactive=False,
             )
+            price_output = gr.Textbox(
+                label="Price check",
+                lines=8,
+                interactive=False,
+            )
             outfit_output = gr.Textbox(
                 label="👗 Outfit idea",
                 lines=8,
@@ -171,12 +211,12 @@ Describe what you're looking for — include size and price if you want to filte
         submit_btn.click(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, outfit_output, fitcard_output],
+            outputs=[listing_output, price_output, outfit_output, fitcard_output],
         )
         query_input.submit(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, outfit_output, fitcard_output],
+            outputs=[listing_output, price_output, outfit_output, fitcard_output],
         )
 
     return demo
