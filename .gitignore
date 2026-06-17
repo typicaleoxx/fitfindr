@@ -14,6 +14,9 @@ venv/
 env/
 .pytest_cache/
 
+# Local demo notes, kept out of version control
+demo_script.md
+
 # Jupyter
 .ipynb_checkpoints/
 
