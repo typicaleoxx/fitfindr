@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tools
-from tools import search_listings, suggest_outfit
+from tools import create_fit_card, search_listings, suggest_outfit
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe, load_listings
 
 
@@ -128,6 +128,10 @@ def selected_graphic_tee():
     return search_listings("graphic tee")[0]
 
 
+def selected_track_jacket():
+    return search_listings("track jacket")[0]
+
+
 def test_suggest_outfit_with_populated_wardrobe_returns_string(monkeypatch):
     client, _ = fake_client_with("Wear it with baggy jeans and chunky sneakers.")
     monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
@@ -238,3 +242,159 @@ def test_suggest_outfit_does_not_mutate_inputs(monkeypatch):
 
     assert item == original_item
     assert wardrobe == original_wardrobe
+
+
+def test_create_fit_card_with_valid_inputs_returns_string(monkeypatch):
+    client, _ = fake_client_with("Bootleg tee, baggy denim, and chunky sneakers.")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card(
+        "Wear it with baggy jeans and chunky sneakers.",
+        selected_graphic_tee(),
+    )
+
+    assert isinstance(result, str)
+    assert result == "Bootleg tee, baggy denim, and chunky sneakers."
+
+
+def test_create_fit_card_prompt_contains_outfit_text(monkeypatch):
+    client, completions = fake_client_with("Caption text")
+    outfit = "Wear it with baggy jeans, a black cropped hoodie, and sneakers."
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    create_fit_card(outfit, selected_graphic_tee())
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert outfit in prompt
+
+
+def test_create_fit_card_prompt_contains_item_details(monkeypatch):
+    client, completions = fake_client_with("Caption text")
+    item = selected_graphic_tee()
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    create_fit_card("Style it with denim and sneakers.", item)
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert item["title"] in prompt
+    assert item["platform"] in prompt
+    assert str(item["price"]) in prompt
+    assert "graphic tee" in prompt.lower()
+
+
+def test_create_fit_card_empty_outfit_returns_specific_error(monkeypatch):
+    client, completions = fake_client_with("Should not be used")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("", selected_graphic_tee())
+
+    assert "outfit suggestion is missing" in result
+    assert "Generate an outfit first" in result
+    assert completions.calls == []
+
+
+def test_create_fit_card_whitespace_outfit_returns_specific_error(monkeypatch):
+    client, completions = fake_client_with("Should not be used")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("   ", selected_graphic_tee())
+
+    assert "outfit suggestion is missing" in result
+    assert completions.calls == []
+
+
+def test_create_fit_card_missing_item_returns_specific_error(monkeypatch):
+    client, completions = fake_client_with("Should not be used")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("Style it with denim.", {})
+
+    assert "selected listing is missing" in result
+    assert "Search for an item first" in result
+    assert completions.calls == []
+
+
+def test_create_fit_card_invalid_item_does_not_call_service(monkeypatch):
+    client, completions = fake_client_with("Should not be used")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("Style it with denim.", None)
+
+    assert "selected listing is missing" in result
+    assert completions.calls == []
+
+
+def test_create_fit_card_missing_api_key_returns_actionable_error(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    result = create_fit_card("Style it with denim.", selected_graphic_tee())
+
+    assert "Groq API key is not configured" in result
+    assert "GROQ_API_KEY" in result
+
+
+def test_create_fit_card_request_exception_returns_failure_message(monkeypatch):
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=BrokenCompletions())
+    )
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("Style it with denim.", selected_graphic_tee())
+
+    assert "fit card service could not complete the request" in result
+    assert "try again" in result.lower()
+
+
+def test_create_fit_card_empty_model_response_returns_clear_message(monkeypatch):
+    client, _ = fake_client_with("   ")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("Style it with denim.", selected_graphic_tee())
+
+    assert "fit card came back empty" in result
+    assert isinstance(result, str)
+
+
+def test_create_fit_card_returns_string_not_response_object(monkeypatch):
+    client, _ = fake_client_with("Graphic tee with denim for the day.")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = create_fit_card("Style it with denim.", selected_graphic_tee())
+
+    assert isinstance(result, str)
+    assert not hasattr(result, "choices")
+
+
+def test_create_fit_card_does_not_mutate_inputs(monkeypatch):
+    client, _ = fake_client_with("Graphic tee with denim for the day.")
+    outfit = "Style it with denim and sneakers."
+    item = selected_graphic_tee()
+    original_outfit = outfit
+    original_item = deepcopy(item)
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    create_fit_card(outfit, item)
+
+    assert outfit == original_outfit
+    assert item == original_item
+
+
+def test_create_fit_card_different_inputs_make_different_prompts(monkeypatch):
+    client, completions = fake_client_with("Caption text")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    create_fit_card(
+        "Wear the tee with baggy jeans and chunky sneakers.",
+        selected_graphic_tee(),
+    )
+    create_fit_card(
+        "Layer the jacket over a white tank with wide-leg trousers.",
+        selected_track_jacket(),
+    )
+
+    first_prompt = completions.calls[0]["messages"][1]["content"]
+    second_prompt = completions.calls[1]["messages"][1]["content"]
+
+    assert first_prompt != second_prompt
+    assert "Graphic Tee" in first_prompt
+    assert "90s Track Jacket" in second_prompt

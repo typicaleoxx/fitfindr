@@ -304,5 +304,88 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # validate the outfit before sending it to the caption service
+    if not isinstance(outfit, str) or not outfit.strip():
+        return (
+            "I could not create the fit card because the outfit suggestion is "
+            "missing. Generate an outfit first and try again."
+        )
+
+    # validate the selected item so the caption has real listing context
+    if not isinstance(new_item, dict) or not new_item.get("title"):
+        return (
+            "I could not create the fit card because the selected listing is "
+            "missing. Search for an item first and try again."
+        )
+
+    outfit_text = outfit.strip()
+
+    # include only listing details that can make the caption more specific
+    item_details = [
+        f"Item title: {new_item.get('title')}",
+        f"Platform: {new_item.get('platform', 'unknown')}",
+        f"Price: ${new_item.get('price')}" if new_item.get("price") is not None else "",
+        f"Category: {new_item.get('category', 'unknown')}",
+        f"Condition: {new_item.get('condition', 'unknown')}",
+        f"Colors: {', '.join(new_item.get('colors') or []) or 'unknown'}",
+        f"Style tags: {', '.join(new_item.get('style_tags') or []) or 'none'}",
+    ]
+    item_summary = "\n".join(detail for detail in item_details if detail)
+
+    # keep the prompt specific enough to vary with different inputs
+    prompt = f"""
+Create one short shareable fit card caption.
+
+Outfit suggestion:
+{outfit_text}
+
+Selected thrift item:
+{item_summary}
+
+Instructions:
+- Return only one final caption.
+- Keep it to 2 to 4 natural sentences.
+- Sound like a personal outfit caption, not a product listing.
+- Use the outfit details and selected item details.
+- Mention useful item facts naturally when available.
+- Do not invent missing facts, trend claims, prices, brands, or platforms.
+- Do not include markdown headings or reasoning.
+""".strip()
+
+    # return a clear message when caption generation cannot finish
+    try:
+        client = _get_groq_client()
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You write concise social outfit captions and return "
+                        "only the final caption text."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.85,
+            max_tokens=180,
+        )
+        fit_card_text = response.choices[0].message.content.strip()
+    except ValueError:
+        return (
+            "I could not generate the fit card because the Groq API key is not "
+            "configured. Add GROQ_API_KEY to the local .env file and try again."
+        )
+    except Exception:
+        return (
+            "The outfit is ready, but the fit card service could not complete "
+            "the request. Please try again in a moment."
+        )
+
+    if not fit_card_text:
+        return (
+            "The outfit is ready, but the fit card came back empty. "
+            "Please try again."
+        )
+
+    return fit_card_text
