@@ -123,9 +123,51 @@ If `new_item` is missing a usable price, the listings cannot be loaded, or there
 **What the workflow does after that failure:**
 The workflow stores the returned dict in `session["price_comparison"]` and continues to `suggest_outfit`. Price comparison is helpful context, not a required blocker for styling or fit card generation.
 
+### Tool 5: get_style_trend
+
+**Function signature:**
+`get_style_trend(new_item: dict, size: str | None = None) -> dict`
+
+**Function name:**
+`get_style_trend`
+
+**Exact parameter names, types, and meanings:**
+- `new_item` (`dict`): The selected listing dict from `session["selected_item"]`. Its `category` and `style_tags` are matched against the curated trend snapshot.
+- `size` (`str | None`): Optional parsed size from the user request, such as `"M"`. It is only used as a small compatibility nudge, never as a hard filter. If it is `None`, size is ignored.
+
+**Exact return type:**
+`dict`
+
+**Specific contents of the return value:**
+The function returns a trend dict with `trend_name`, `styling_note`, `source_platform`, `source_url`, `checked_at`, and `match_reason`. On a match these fields describe the single best matching trend and how it matched. When nothing matches, every field except `match_reason` is `None` and `match_reason` explains that no trend was found.
+
+**Local trend dataset structure:**
+The trends live in `data/trends.json`, a small curated trend snapshot of about four to six records. Each record has `trend_name`, `categories` (list), `style_tags` (list), `sizes` (list), `styling_note`, `source_platform`, `source_url`, and `checked_at`. The categories and style tags mirror values already present in `data/listings.json`. The file is curated by hand from public trend pages and does not update automatically.
+
+**How the selected item matches a trend:**
+The tool normalizes the selected item `category` and `style_tags`, then scores each trend record. A shared category is the strongest signal and is weighted highest. Each shared style tag adds a smaller amount to the score. The highest scoring record with a positive score wins, and ties resolve to the earliest record in file order so the result is deterministic.
+
+**How size is considered:**
+Size is only a small compatibility check. If `size` is provided and it appears in the trend record `sizes`, the score gets a small bonus. A size mismatch never removes a trend from consideration, because trend relevance is about category and style, not exact fit.
+
+**What happens when no trend matches:**
+The tool returns the documented empty trend dict with `None` values and a clear `match_reason`. The agent stores that result and continues the required workflow without interruption.
+
+**How trend context reaches `suggest_outfit`:**
+`run_agent` attaches `wardrobe_with_profile["style_trend"] = session["style_trend"]` to the same wardrobe copy that already carries the style profile. The original wardrobe is not mutated. `suggest_outfit` reads optional `style_trend` context and, when `trend_name`, `styling_note`, and `source_platform` are present, adds them to the prompt and asks the model to incorporate the styling note into the recommendation without describing the trend as clothing the user owns.
+
+**How the trend appears in the interface:**
+A compact Trend Insight panel shows the trend name, styling note, source platform, checked date, and match reason. It never shows raw JSON. When no trend matches it shows a short line saying no matching trend was found and that the outfit was generated without trend context.
+
+**How the feature will be tested:**
+Tests cover a matching item returning a full trend dict, the documented fields being present, category or style tag matching selecting the expected trend, the empty result on no match, invalid item and missing file not crashing, the input item staying unchanged, deterministic output, agent state flow and call order, trend context reaching the wardrobe copy, the styling note appearing in the prompt, and the interface display for both the matched and unmatched cases. Groq is mocked and no network request is made.
+
+**How generated code will be reviewed:**
+I will confirm the tool is deterministic, makes no network or model calls, does not mutate the selected item, handles missing files and fields safely, keeps the three required tool signatures unchanged, leaves price comparison and style profile memory intact, and uses real public source names in the dataset. I will inspect the diff, run targeted and full tests, and verify the trend visibly affects the outfit prompt.
+
 ### Additional Tools
 
-The required version uses the first three tools. The stretch version adds `compare_price` as a fourth local tool and style profile helpers in `style_profile.py`. Query parsing will happen inside `run_agent` before calling `search_listings`.
+The required version uses the first three tools. The stretch version adds `compare_price` as a fourth local tool, style profile helpers in `style_profile.py`, and `get_style_trend` as a fifth local tool backed by `data/trends.json`. Query parsing will happen inside `run_agent` before calling `search_listings`.
 
 ## Style Profile Memory
 
@@ -201,14 +243,17 @@ The planning loop is implemented by `run_agent(query: str, wardrobe: dict) -> di
 16. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
 17. Store the returned dict in `session["price_comparison"]`.
 18. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
-19. Create a wardrobe copy, attach `session["style_profile"]` to it, and pass that copy into `suggest_outfit`.
-20. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
-21. If the outfit result is not usable, set `session["error"]` and return early.
-22. If usable, store it in `session["outfit_suggestion"]`.
-23. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
-24. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
-25. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
-26. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, style profile, outfit suggestion, and fit card are all available.
+19. Pass the same stored listing into `get_style_trend` by calling `get_style_trend(new_item=session["selected_item"], size=session["parsed"]["size"])`.
+20. Store the returned dict in `session["style_trend"]`.
+21. Continue even when no trend matched because trend context is optional.
+22. Create a wardrobe copy, attach `session["style_profile"]` and `session["style_trend"]` to it, and pass that copy into `suggest_outfit`.
+23. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
+24. If the outfit result is not usable, set `session["error"]` and return early.
+25. If usable, store it in `session["outfit_suggestion"]`.
+26. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
+27. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
+28. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
+29. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, style profile, style trend, outfit suggestion, and fit card are all available.
 
 ## State Management
 
@@ -224,6 +269,7 @@ The actual session structure is created by `_new_session(query, wardrobe)` in `a
 | `search_results` | A list of listing dicts returned by `search_listings`. | Written right after `search_listings` returns. | The result check and selected item step. |
 | `selected_item` | The top listing dict chosen from `search_results[0]`. | Written only if search results are not empty. | `compare_price`, `suggest_outfit`, and `create_fit_card`. |
 | `price_comparison` | A dict returned by `compare_price` with price assessment, averages, differences, and comparable item summaries. | Written after `selected_item` is stored. | The app price output panel and tests. |
+| `style_trend` | A dict returned by `get_style_trend` with the best matching trend or a documented empty result. | Written after `price_comparison`, before `suggest_outfit`. | `suggest_outfit`, the app trend insight panel, and tests. |
 | `wardrobe` | The wardrobe dict passed into `run_agent`, with an `items` list. | Written when `_new_session` is called. | `suggest_outfit`. |
 | `outfit_suggestion` | The non-empty string returned by `suggest_outfit`. | Written after outfit validation passes. | `create_fit_card` and the app output. |
 | `fit_card` | The caption string returned by `create_fit_card`. | Written after fit card validation passes. | The app output and final user response. |
@@ -240,6 +286,7 @@ The user does not manually reenter the selected item, price comparison, or outfi
 | Style profile storage | The profile file is missing. | `load_style_profile()` returns the empty normalized profile. | Continue normally and save a new runtime file only if the current query contains supported preferences. | `No saved style preferences yet.` | User can keep searching. New clear preferences in the request will create the profile. |
 | Style profile storage | The profile file contains invalid JSON or unsupported fields. | `load_style_profile()` ignores invalid data and returns a normalized profile. | Continue the main workflow and avoid exposing raw file errors. | `Style profile was reset because saved data could not be read.` | I should keep the profile optional and avoid blocking search or styling. |
 | Style profile storage | Saving or clearing the profile fails. | `save_style_profile()` or `clear_style_profile()` returns `False`. | Continue listing search, price comparison, outfit generation, and fit card generation. | `Style profile could not be saved, but the search can continue.` | User can still use all main outputs. I should check local file permissions. |
+| `get_style_trend` | No trend matches the selected item, or `data/trends.json` is missing or invalid. | Returns the documented empty trend dict with `None` values and a clear `match_reason`. | Store the dict in `session["style_trend"]` and continue to `suggest_outfit`. | `No matching trend was found for this item. The outfit was generated without trend context.` | User can still use the listing, price check, outfit idea, and fit card. Trend context is optional. |
 | `suggest_outfit` | `wardrobe["items"]` is empty or has too little useful information. | Returns a general styling suggestion for `new_item` instead of an empty string. | Store the non-empty suggestion and continue to `create_fit_card`. | `I do not have saved closet pieces for you yet, so I made a general styling idea for this item.` | User can keep going or later add wardrobe items for more personal suggestions. |
 | `suggest_outfit` | The text request raises an exception or returns unusable text. | Returns a clear fallback styling message if possible. | If fallback text is non-empty, store it and continue. If empty, set `session["error"]` and stop. | `I found a listing, but I could not generate an outfit idea right now. Try again, or use a simpler styling request.` | User should retry or simplify the request. I should check the API key and text request error handling. |
 | `create_fit_card` | `outfit` is empty or whitespace. | Returns a descriptive error message string and does not raise an exception. | Treat the missing outfit as a workflow error, set `session["error"]`, and return without a successful fit card. | `I found an item, but I need an outfit suggestion before I can make a fit card.` | I should rerun outfit generation before calling `create_fit_card`. |
@@ -286,7 +333,15 @@ Session state
   | price_comparison stored
   | insufficient data continues
   v
-Wardrobe copy with style_profile attached
+get_style_trend(new_item=selected_item, size=parsed size)
+  |
+  | style_trend dict, no match continues
+  v
+Session state
+  |
+  | style_trend stored
+  v
+Wardrobe copy with style_profile and style_trend attached
   |
   | original wardrobe stays unchanged
   v
@@ -350,6 +405,10 @@ I will use the Tool 4 specification, the state table, and the app output contrac
 ### Phase 9: Add style profile memory
 
 I will use the Style Profile Memory section, the storage approach, and the existing session structure. I will create `style_profile.py` with `load_style_profile`, `save_style_profile`, `update_style_profile`, `extract_style_preferences`, and `clear_style_profile`. I will store runtime data in ignored `data/style_profile.local.json`, load and update it at the start of `run_agent`, attach the normalized profile to a wardrobe copy before calling `suggest_outfit`, and add a compact profile display plus a clear control in the interface. Tests should verify helper behavior, prompt context, agent state flow, app output order, clear action, and the two-interaction memory proof. I will revise any part that stores unsupported data, mutates the original wardrobe, changes required tool signatures, blocks the main workflow on storage failure, or weakens price comparison.
+
+### Phase 10: Add trend awareness stretch tool
+
+I will use the Tool 5 specification, the curated `data/trends.json` snapshot, and the existing session structure. I will add `get_style_trend(new_item, size=None)` to `tools.py` as a small deterministic function that loads the trend snapshot, scores trends by shared category and style tags, uses size only as a small compatibility nudge, and returns the best matching trend or the documented empty result. It makes no network or model calls and does not mutate the selected item. I will call it in `run_agent` after the selected item is stored and before `suggest_outfit`, store the result in `session["style_trend"]`, and attach it to the same wardrobe copy that carries the style profile. I will extend the `suggest_outfit` prompt so it incorporates the trend styling note when one is present, without describing the trend as owned clothing. I will add one compact Trend Insight panel to the interface without redesigning the rest of the app. Tests should verify matching, fields, the empty result, safe failure, no mutation, determinism, agent state flow, prompt inclusion, and app display. I will review the implementation against the plan, run the test suite, confirm price comparison and style profile memory still work, and launch the app to confirm the trend visibly affects the outfit. The trend snapshot is curated by hand from public trend pages and does not update automatically. I will not add live scraping, scheduled jobs, a database, or retry fallback in this phase.
 
 ## Complete Interaction Walkthrough
 
@@ -428,16 +487,35 @@ I will use the Style Profile Memory section, the storage approach, and the exist
 ```
 
 - State key updated: `session["price_comparison"]`.
-- Next conditional decision: continue to outfit generation even if the assessment is `"insufficient data"`.
+- Next conditional decision: continue to trend lookup even if the assessment is `"insufficient data"`.
 
-**Step 5: Suggest an outfit**
+**Step 5: Look up a style trend**
+- Tool called: `get_style_trend`.
+- Exact arguments: `new_item=session["selected_item"]`, `size=session["parsed"]["size"]`.
+- Example return value:
+
+```python
+{
+    "trend_name": "graphic tee layering",
+    "styling_note": "layer the graphic tee over a fitted long sleeve top",
+    "source_platform": "Pinterest Trends",
+    "source_url": "https://trends.pinterest.com/",
+    "checked_at": "2026-06-17",
+    "match_reason": "Matched the tops category and the vintage style tag.",
+}
+```
+
+- State key updated: `session["style_trend"]`.
+- Next conditional decision: continue to outfit generation even if no trend matched.
+
+**Step 6: Suggest an outfit**
 - Tool called: `suggest_outfit`.
-- Exact arguments: `new_item=session["selected_item"]`, `wardrobe=session["wardrobe"]`.
+- Exact arguments: `new_item=session["selected_item"]`, `wardrobe=wardrobe_with_profile` (a copy carrying the style profile and the style trend).
 - Example return value: `"Wear the Y2K Baby Tee with your baggy straight-leg jeans, chunky white sneakers, and black cropped zip hoodie. Add the black crossbody bag to keep the outfit casual and streetwear leaning."`
 - State key updated: `session["outfit_suggestion"]`.
 - Next conditional decision: because the outfit string is non-empty, call `create_fit_card`.
 
-**Step 6: Create the fit card**
+**Step 7: Create the fit card**
 - Tool called: `create_fit_card`.
 - Exact arguments: `outfit=session["outfit_suggestion"]`, `new_item=session["selected_item"]`.
 - Example return value: `"Found this Y2K Baby Tee - Butterfly Print on depop for $18, and it is going straight into a relaxed weekend fit. I would wear it with baggy denim, chunky white sneakers, a cropped hoodie, and a black crossbody for a soft vintage streetwear look."`
@@ -445,7 +523,7 @@ I will use the Style Profile Memory section, the storage approach, and the exist
 - Next conditional decision: because the fit card is non-empty, return the final session.
 
 **Final user output:**
-The user sees the top listing details, the price assessment, the outfit suggestion, and the shareable fit card caption. `session["error"]` remains `None`.
+The user sees the top listing details, the price assessment, the trend insight, the outfit suggestion, and the shareable fit card caption. The outfit visibly reflects the trend styling note. `session["error"]` remains `None`.
 
 ### No results path
 
@@ -468,7 +546,7 @@ The user sees the top listing details, the price assessment, the outfit suggesti
 **Final user output:**
 `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.`
 
-`compare_price`, `suggest_outfit`, and `create_fit_card` are not called. `session["selected_item"]`, `session["price_comparison"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.
+`compare_price`, `get_style_trend`, `suggest_outfit`, and `create_fit_card` are not called. `session["selected_item"]`, `session["price_comparison"]`, `session["style_trend"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.
 
 ### Style profile memory two interaction walkthrough
 

@@ -600,3 +600,146 @@ def test_failure_after_success_does_not_reuse_stale_state(monkeypatch):
     assert second_session["outfit_suggestion"] is None
     assert second_session["fit_card"] is None
     assert "could not find any listings" in second_session["error"]
+
+
+def sample_style_trend():
+    return {
+        "trend_name": "graphic tee layering",
+        "styling_note": "layer the graphic tee over a fitted long sleeve top",
+        "source_platform": "Pinterest Trends",
+        "source_url": "https://trends.pinterest.com/",
+        "checked_at": "2026-06-17",
+        "match_reason": "Matched the tops category and the vintage style tag.",
+    }
+
+
+def test_get_style_trend_runs_after_selected_item(monkeypatch):
+    selected_item = sample_item()
+    calls = []
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: (calls.append("compare"), sample_price_comparison())[1])
+
+    def fake_get_style_trend(new_item, size=None):
+        calls.append("trend")
+        return sample_style_trend()
+
+    def fake_suggest_outfit(new_item, wardrobe):
+        calls.append("outfit")
+        return "Outfit"
+
+    monkeypatch.setattr(agent, "get_style_trend", fake_get_style_trend)
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    agent.run_agent("vintage graphic tee", {"items": []})
+
+    assert calls == ["compare", "trend", "outfit"]
+
+
+def test_exact_selected_item_passed_to_get_style_trend(monkeypatch):
+    selected_item = sample_item()
+    seen = {}
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+
+    def fake_get_style_trend(new_item, size=None):
+        seen["trend_item"] = new_item
+        seen["trend_size"] = size
+        return sample_style_trend()
+
+    monkeypatch.setattr(agent, "get_style_trend", fake_get_style_trend)
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("vintage graphic tee size M", {"items": []})
+
+    assert seen["trend_item"] is session["selected_item"]
+    assert seen["trend_size"] == "M"
+
+
+def test_style_trend_is_stored_in_session(monkeypatch):
+    selected_item = sample_item()
+    trend = sample_style_trend()
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "get_style_trend", lambda new_item, size=None: trend)
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("vintage graphic tee", {"items": []})
+
+    assert session["style_trend"] is trend
+
+
+def test_trend_context_is_added_to_wardrobe_copy(monkeypatch):
+    selected_item = sample_item()
+    wardrobe = {"items": [{"name": "jeans"}]}
+    original_wardrobe = deepcopy(wardrobe)
+    trend = sample_style_trend()
+    seen = {}
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "get_style_trend", lambda new_item, size=None: trend)
+
+    def fake_suggest_outfit(new_item, wardrobe):
+        seen["wardrobe"] = wardrobe
+        return "Outfit"
+
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    agent.run_agent("vintage graphic tee", wardrobe)
+
+    assert seen["wardrobe"] is not wardrobe
+    assert seen["wardrobe"]["style_trend"] is trend
+    assert wardrobe == original_wardrobe
+    assert "style_trend" not in wardrobe
+
+
+def test_no_matching_trend_does_not_stop_required_flow(monkeypatch):
+    selected_item = sample_item()
+    empty_trend = {
+        "trend_name": None,
+        "styling_note": None,
+        "source_platform": None,
+        "source_url": None,
+        "checked_at": None,
+        "match_reason": "No matching trend was found for this item.",
+    }
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "get_style_trend", lambda new_item, size=None: empty_trend)
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("vintage graphic tee", {"items": []})
+
+    assert session["style_trend"] is empty_trend
+    assert session["outfit_suggestion"] == "Outfit"
+    assert session["fit_card"] == "Card"
+    assert session["error"] is None
+
+
+def test_empty_search_does_not_call_trend_tool(monkeypatch):
+    trend_called = False
+
+    def fake_get_style_trend(new_item, size=None):
+        nonlocal trend_called
+        trend_called = True
+        return sample_style_trend()
+
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [])
+    monkeypatch.setattr(agent, "get_style_trend", fake_get_style_trend)
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("designer ballgown size XXS under $5", {"items": []})
+
+    assert trend_called is False
+    assert session["style_trend"] is None

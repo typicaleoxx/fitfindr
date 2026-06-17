@@ -28,7 +28,13 @@ from style_profile import (
     save_style_profile,
     update_style_profile,
 )
-from tools import compare_price, create_fit_card, search_listings, suggest_outfit
+from tools import (
+    compare_price,
+    create_fit_card,
+    get_style_trend,
+    search_listings,
+    suggest_outfit,
+)
 
 
 # session state
@@ -52,6 +58,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "search_results": [],        # list of matching listing dicts
         "selected_item": None,       # top result, passed into suggest_outfit
         "price_comparison": None,    # dict returned by compare_price
+        "style_trend": None,         # dict returned by get_style_trend
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
@@ -225,11 +232,19 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         new_item=session["selected_item"],
     )
 
+    # match the selected item against the small curated trend dataset
+    session["style_trend"] = get_style_trend(
+        new_item=session["selected_item"],
+        size=session["parsed"].get("size"),
+    )
+
     # add the profile to a wardrobe copy so the original input stays unchanged
     wardrobe_with_profile = deepcopy(session["wardrobe"])
     if not isinstance(wardrobe_with_profile, dict):
         wardrobe_with_profile = {"items": []}
     wardrobe_with_profile["style_profile"] = session["style_profile"]
+    # keep trend context optional so the required workflow can continue
+    wardrobe_with_profile["style_trend"] = session["style_trend"]
 
     outfit_suggestion = suggest_outfit(
         new_item=session["selected_item"],

@@ -1,0 +1,52 @@
+[
+  {
+    "trend_name": "graphic tee layering",
+    "categories": ["tops"],
+    "style_tags": ["graphic tee", "vintage", "grunge", "band tee", "streetwear"],
+    "sizes": ["S", "M", "L", "XL", "S/M", "L/XL"],
+    "styling_note": "layer the graphic tee over a fitted long sleeve top",
+    "source_platform": "Pinterest Trends",
+    "source_url": "https://trends.pinterest.com/",
+    "checked_at": "2026-06-17"
+  },
+  {
+    "trend_name": "baggy denim revival",
+    "categories": ["bottoms"],
+    "style_tags": ["denim", "baggy", "90s", "streetwear", "workwear"],
+    "sizes": ["W28", "W29", "W30", "W32", "M", "L"],
+    "styling_note": "balance baggy jeans with a fitted top tucked in and chunky sneakers",
+    "source_platform": "Google Trends",
+    "source_url": "https://trends.google.com/trends/",
+    "checked_at": "2026-06-17"
+  },
+  {
+    "trend_name": "oversized layering",
+    "categories": ["outerwear", "tops"],
+    "style_tags": ["oversized", "layering", "vintage", "knitwear", "flannel"],
+    "sizes": ["M", "L", "XL", "One Size", "M/L"],
+    "styling_note": "use the oversized piece as the outer layer over a slimmer base for contrast",
+    "source_platform": "Pinterest Trends",
+    "source_url": "https://trends.pinterest.com/",
+    "checked_at": "2026-06-17"
+  },
+  {
+    "trend_name": "chunky platform footwear",
+    "categories": ["shoes"],
+    "style_tags": ["platform", "y2k", "90s", "goth", "streetwear"],
+    "sizes": ["US 7", "US 8", "US 8.5", "US 9"],
+    "styling_note": "ground the look with chunky platform shoes and a slightly cropped hem",
+    "source_platform": "Pinterest Trends",
+    "source_url": "https://trends.pinterest.com/",
+    "checked_at": "2026-06-17"
+  },
+  {
+    "trend_name": "cottagecore earth tones",
+    "categories": ["tops", "bottoms", "outerwear"],
+    "style_tags": ["cottagecore", "earth tones", "linen", "minimal", "floral"],
+    "sizes": ["S", "M", "L", "M/L"],
+    "styling_note": "keep the palette in soft earth tones with natural fabrics like linen",
+    "source_platform": "Google Trends",
+    "source_url": "https://trends.google.com/trends/",
+    "checked_at": "2026-06-17"
+  }
+]

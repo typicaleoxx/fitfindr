@@ -13,8 +13,10 @@ Tools:
     create_fit_card(outfit, new_item)               → str
 """
 
+import json
 import os
 import re
+from pathlib import Path
 from statistics import median
 
 from dotenv import load_dotenv
@@ -23,6 +25,9 @@ from groq import Groq
 from utils.data_loader import load_listings
 
 load_dotenv()
+
+# curated trend snapshot, loaded from a small local file rather than a live feed
+TRENDS_PATH = Path(__file__).resolve().parent / "data" / "trends.json"
 
 
 # groq client
@@ -367,6 +372,115 @@ def compare_price(new_item: dict, listings: list[dict] | None = None) -> dict:
     )
 
 
+# tool 5: get_style_trend
+
+def _empty_style_trend(reason: str) -> dict:
+    return {
+        "trend_name": None,
+        "styling_note": None,
+        "source_platform": None,
+        "source_url": None,
+        "checked_at": None,
+        "match_reason": reason,
+    }
+
+
+def _load_trends() -> list[dict]:
+    # treat a missing or unreadable snapshot as no trends rather than an error
+    try:
+        with TRENDS_PATH.open("r", encoding="utf-8") as trends_file:
+            trends = json.load(trends_file)
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    return trends if isinstance(trends, list) else []
+
+
+def get_style_trend(new_item: dict, size: str | None = None) -> dict:
+    """
+    Match a selected listing against a small curated trend snapshot.
+
+    Args:
+        new_item: Selected listing dict from the search results.
+        size:     Optional parsed size used only as a small compatibility nudge.
+
+    Returns:
+        A trend dict with trend_name, styling_note, source_platform, source_url,
+        checked_at, and match_reason. When nothing matches, every field except
+        match_reason is None. Never raises and never calls the network or model.
+    """
+    # require a usable item before comparing it to the trend snapshot
+    if not isinstance(new_item, dict) or not new_item.get("title"):
+        return _empty_style_trend("No matching trend was found for this item.")
+
+    item_category = (new_item.get("category") or "").strip().lower()
+    item_tags = _normalized_set(new_item.get("style_tags"))
+    requested_size = size.strip().lower() if isinstance(size, str) and size.strip() else None
+
+    trends = _load_trends()
+
+    # score each trend, weighting a shared category above shared style tags
+    best_trend = None
+    best_score = 0
+    best_reason = ""
+    for trend in trends:
+        if not isinstance(trend, dict):
+            continue
+
+        trend_categories = {
+            str(value).strip().lower()
+            for value in trend.get("categories", [])
+            if str(value).strip()
+        }
+        trend_tags = _normalized_set(trend.get("style_tags"))
+
+        category_match = bool(item_category) and item_category in trend_categories
+        shared_tags = sorted(item_tags & trend_tags)
+
+        score = 0
+        if category_match:
+            score += 5
+        score += len(shared_tags) * 2
+
+        # size is only a light compatibility nudge, never a hard filter
+        if requested_size:
+            trend_sizes = {
+                str(value).strip().lower()
+                for value in trend.get("sizes", [])
+                if str(value).strip()
+            }
+            if requested_size in trend_sizes:
+                score += 1
+
+        if score <= 0:
+            continue
+
+        # keep the first highest scoring trend so ties stay deterministic
+        if score > best_score:
+            best_score = score
+            best_trend = trend
+            reason_parts = []
+            if category_match:
+                reason_parts.append(f"the {item_category} category")
+            if shared_tags:
+                joined_tags = ", ".join(shared_tags)
+                label = "style tag" if len(shared_tags) == 1 else "style tags"
+                reason_parts.append(f"the {joined_tags} {label}")
+            best_reason = "Matched " + " and ".join(reason_parts) + "."
+
+    if best_trend is None:
+        return _empty_style_trend("No matching trend was found for this item.")
+
+    return {
+        "trend_name": best_trend.get("trend_name"),
+        "styling_note": best_trend.get("styling_note"),
+        "source_platform": best_trend.get("source_platform"),
+        "source_url": best_trend.get("source_url"),
+        "checked_at": best_trend.get("checked_at"),
+        "match_reason": best_reason,
+    }
+
+
 def _format_style_profile(profile: dict | None) -> str:
     if not isinstance(profile, dict):
         return "No saved style preferences."
@@ -392,6 +506,19 @@ def _format_style_profile(profile: dict | None) -> str:
     if not profile_lines:
         return "No saved style preferences."
     return "\n".join(profile_lines)
+
+
+def _format_style_trend(trend: dict | None) -> str:
+    # only surface trend context when a real trend matched the item
+    if not isinstance(trend, dict) or not trend.get("trend_name"):
+        return "No current trend context."
+
+    trend_lines = [f"Trend: {trend.get('trend_name')}"]
+    if trend.get("styling_note"):
+        trend_lines.append(f"Styling note: {trend.get('styling_note')}")
+    if trend.get("source_platform"):
+        trend_lines.append(f"Source: {trend.get('source_platform')}")
+    return "\n".join(trend_lines)
 
 
 # tool 2: suggest_outfit
@@ -447,6 +574,9 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     style_profile_text = _format_style_profile(
         wardrobe.get("style_profile") if isinstance(wardrobe, dict) else None
     )
+    style_trend_text = _format_style_trend(
+        wardrobe.get("style_trend") if isinstance(wardrobe, dict) else None
+    )
 
     if wardrobe_items:
         wardrobe_lines = []
@@ -484,6 +614,9 @@ User wardrobe:
 Saved style preferences:
 {style_profile_text}
 
+Current trend context:
+{style_trend_text}
+
 Instructions:
 - Return only the outfit suggestion.
 - Suggest one or two complete outfit combinations.
@@ -492,6 +625,8 @@ Instructions:
 - {wardrobe_instruction}
 - Use saved style preferences when they are available.
 - Do not describe saved style preferences as clothing the user owns.
+- When a trend styling note is provided, incorporate it into the recommendation.
+- Do not describe the trend as an item the user owns.
 - Keep the response concise and natural.
 """.strip()
 

@@ -6,8 +6,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tools
-from tools import compare_price, create_fit_card, search_listings, suggest_outfit
+from tools import (
+    compare_price,
+    create_fit_card,
+    get_style_trend,
+    search_listings,
+    suggest_outfit,
+)
 from utils.data_loader import get_empty_wardrobe, get_example_wardrobe, load_listings
+
+
+EXPECTED_TREND_FIELDS = {
+    "trend_name",
+    "styling_note",
+    "source_platform",
+    "source_url",
+    "checked_at",
+    "match_reason",
+}
 
 
 EXPECTED_LISTING_FIELDS = {
@@ -625,3 +641,119 @@ def test_create_fit_card_different_inputs_make_different_prompts(monkeypatch):
     assert first_prompt != second_prompt
     assert "Graphic Tee" in first_prompt
     assert "90s Track Jacket" in second_prompt
+
+
+def trend_item(**overrides):
+    item = {
+        "id": "trend_selected",
+        "title": "Vintage Graphic Tee",
+        "category": "tops",
+        "style_tags": ["graphic tee", "vintage"],
+        "size": "M",
+    }
+    item.update(overrides)
+    return item
+
+
+def test_get_style_trend_matching_item_returns_trend_dict():
+    result = get_style_trend(trend_item())
+
+    assert isinstance(result, dict)
+    assert result["trend_name"] == "graphic tee layering"
+    assert result["styling_note"]
+    assert result["source_platform"] == "Pinterest Trends"
+
+
+def test_get_style_trend_result_contains_all_documented_fields():
+    matched = get_style_trend(trend_item())
+    unmatched = get_style_trend(
+        trend_item(category="accessories", style_tags=["western"])
+    )
+
+    assert set(matched.keys()) == EXPECTED_TREND_FIELDS
+    assert set(unmatched.keys()) == EXPECTED_TREND_FIELDS
+
+
+def test_get_style_trend_selects_expected_trend_by_category_and_tags():
+    result = get_style_trend(
+        trend_item(category="bottoms", style_tags=["denim", "baggy", "90s"])
+    )
+
+    assert result["trend_name"] == "baggy denim revival"
+    assert "bottoms category" in result["match_reason"]
+
+
+def test_get_style_trend_no_match_returns_empty_result():
+    result = get_style_trend(
+        trend_item(category="accessories", style_tags=["western"])
+    )
+
+    assert result["trend_name"] is None
+    assert result["styling_note"] is None
+    assert result["source_platform"] is None
+    assert result["source_url"] is None
+    assert result["checked_at"] is None
+    assert "No matching trend was found" in result["match_reason"]
+
+
+def test_get_style_trend_invalid_item_does_not_crash():
+    assert get_style_trend({})["trend_name"] is None
+    assert get_style_trend(None)["trend_name"] is None
+
+
+def test_get_style_trend_missing_trend_file_does_not_crash(monkeypatch):
+    monkeypatch.setattr(tools, "TRENDS_PATH", Path("does/not/exist/trends.json"))
+
+    result = get_style_trend(trend_item())
+
+    assert result["trend_name"] is None
+    assert "No matching trend was found" in result["match_reason"]
+
+
+def test_get_style_trend_does_not_mutate_input_item():
+    item = trend_item()
+    original_item = deepcopy(item)
+
+    get_style_trend(item, size="M")
+
+    assert item == original_item
+
+
+def test_get_style_trend_is_deterministic():
+    item = trend_item()
+
+    first = get_style_trend(item, size="M")
+    second = get_style_trend(item, size="M")
+
+    assert first == second
+
+
+def test_suggest_outfit_prompt_includes_trend_styling_note(monkeypatch):
+    client, completions = fake_client_with("Layer it and add chunky sneakers.")
+    wardrobe = get_empty_wardrobe()
+    wardrobe["style_trend"] = {
+        "trend_name": "graphic tee layering",
+        "styling_note": "layer the graphic tee over a fitted long sleeve top",
+        "source_platform": "Pinterest Trends",
+    }
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    suggest_outfit(selected_graphic_tee(), wardrobe)
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert "Current trend context:" in prompt
+    assert "graphic tee layering" in prompt
+    assert "layer the graphic tee over a fitted long sleeve top" in prompt
+    assert "Pinterest Trends" in prompt
+    assert "incorporate it into the recommendation" in prompt
+
+
+def test_suggest_outfit_missing_style_trend_preserves_behavior(monkeypatch):
+    client, completions = fake_client_with("Style it with denim.")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = suggest_outfit(selected_graphic_tee(), get_example_wardrobe())
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert result == "Style it with denim."
+    assert "No current trend context." in prompt

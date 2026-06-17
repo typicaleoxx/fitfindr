@@ -78,6 +78,29 @@ def _format_price_comparison(price_comparison: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _format_trend_insight(style_trend: dict | None) -> str:
+    """Format the matched trend for the trend insight panel."""
+    # show a plain fallback line when no trend matched the selected item
+    if not isinstance(style_trend, dict) or not style_trend.get("trend_name"):
+        return (
+            "No matching trend was found for this item. "
+            "The outfit was generated without trend context."
+        )
+
+    lines = [f"Trend: {style_trend['trend_name']}"]
+    if style_trend.get("styling_note"):
+        lines.append(f"Styling note: {style_trend['styling_note']}")
+    # show the source so the trend result can be verified
+    if style_trend.get("source_platform"):
+        lines.append(f"Source: {style_trend['source_platform']}")
+    if style_trend.get("checked_at"):
+        lines.append(f"Checked: {style_trend['checked_at']}")
+    if style_trend.get("match_reason"):
+        lines.append(f"Why: {style_trend['match_reason']}")
+
+    return "\n".join(lines)
+
+
 def _format_style_profile(
     style_profile: dict | None,
     updated: bool = False,
@@ -142,7 +165,7 @@ def handle_clear_style_profile() -> tuple[str, str]:
     )
 
 
-def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str, str]:
+def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str, str, str]:
     """
     Called by Gradio when the user submits a query.
 
@@ -175,6 +198,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
             "",
             "",
             "",
+            "",
         )
 
     # choose the starter wardrobe state from the existing radio options
@@ -191,6 +215,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
         message=(session.get("style_profile_message") or "").strip(),
     )
     price_text = _format_price_comparison(session.get("price_comparison"))
+    trend_text = _format_trend_insight(session.get("style_trend"))
     outfit_text = (session.get("outfit_suggestion") or "").strip()
     fit_card_text = (session.get("fit_card") or "").strip()
     error_text = (session.get("error") or "").strip()
@@ -198,15 +223,15 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
     # clear later outputs when the agent stops on an earlier failure
     if error_text:
         if not session.get("selected_item"):
-            return error_text, profile_text, "", "", ""
+            return error_text, profile_text, "", "", "", ""
         if not fit_card_text:
             if "fit card" in error_text.lower():
-                return listing_text, profile_text, price_text, outfit_text, error_text
-            return listing_text, profile_text, price_text, error_text, ""
+                return listing_text, profile_text, price_text, outfit_text, error_text, trend_text
+            return listing_text, profile_text, price_text, error_text, "", trend_text
         if not outfit_text:
-            return listing_text, profile_text, price_text, error_text, ""
+            return listing_text, profile_text, price_text, error_text, "", trend_text
         if "fit card" in error_text.lower():
-            return listing_text, profile_text, price_text, outfit_text, error_text
+            return listing_text, profile_text, price_text, outfit_text, error_text, trend_text
 
     # return values in the same order as the gradio output components
     return (
@@ -215,6 +240,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
         price_text,
         outfit_text or "No outfit suggestion is available.",
         fit_card_text or "No fit card is available.",
+        trend_text,
     )
 
 
@@ -279,6 +305,11 @@ Describe what you're looking for — include size and price if you want to filte
                 lines=8,
                 interactive=False,
             )
+            trend_output = gr.Textbox(
+                label="📈 Trend insight",
+                lines=8,
+                interactive=False,
+            )
         clear_status = gr.Textbox(
             label="Style profile status",
             lines=1,
@@ -300,6 +331,7 @@ Describe what you're looking for — include size and price if you want to filte
                 price_output,
                 outfit_output,
                 fitcard_output,
+                trend_output,
             ],
         )
         query_input.submit(
@@ -311,6 +343,7 @@ Describe what you're looking for — include size and price if you want to filte
                 price_output,
                 outfit_output,
                 fitcard_output,
+                trend_output,
             ],
         )
         clear_profile_btn.click(
