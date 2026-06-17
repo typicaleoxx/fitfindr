@@ -385,7 +385,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 # cli test
 
 if __name__ == "__main__":
-    from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
+    from utils.data_loader import get_example_wardrobe
 
     print("=== Happy path: graphic tee ===\n")
     session = run_agent(
