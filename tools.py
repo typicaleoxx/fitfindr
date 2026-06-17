@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -69,8 +70,77 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    # normalize the query so matching does not depend on capitalization
+    stop_words = {
+        "a",
+        "an",
+        "and",
+        "for",
+        "in",
+        "looking",
+        "of",
+        "or",
+        "the",
+        "to",
+        "under",
+        "with",
+    }
+    search_terms = [
+        term
+        for term in re.findall(r"[a-z0-9]+", description.lower())
+        if len(term) > 1 and term not in stop_words
+    ]
+
+    # prepare optional filters only when the user gave useful values
+    requested_size = size.strip().lower() if size and size.strip() else None
+    requested_price = max_price if max_price is not None else None
+
+    # load the original listing dicts so the returned structure stays unchanged
+    listings = load_listings()
+    scored_listings = []
+
+    for index, listing in enumerate(listings):
+        if requested_price is not None and listing["price"] > requested_price:
+            continue
+
+        if requested_size:
+            size_text = listing.get("size", "").lower()
+            size_tokens = re.findall(r"[a-z0-9]+", size_text)
+            requested_tokens = re.findall(r"[a-z0-9]+", requested_size)
+            if requested_size not in size_text and not all(
+                token in size_tokens for token in requested_tokens
+            ):
+                continue
+
+        # rank stronger title and style matches above general description matches
+        title_text = listing.get("title", "").lower()
+        description_text = listing.get("description", "").lower()
+        category_text = listing.get("category", "").lower()
+        style_text = " ".join(listing.get("style_tags", [])).lower()
+        color_text = " ".join(listing.get("colors", [])).lower()
+        brand_text = (listing.get("brand") or "").lower()
+
+        score = 0
+        for term in search_terms:
+            if term in title_text:
+                score += 4
+            if term in style_text:
+                score += 4
+            if term in category_text:
+                score += 2
+            if term in color_text:
+                score += 2
+            if term in brand_text:
+                score += 2
+            if term in description_text:
+                score += 1
+
+        # keep only listings with at least one real query match
+        if score > 0:
+            scored_listings.append((score, listing["price"], index, listing))
+
+    scored_listings.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [listing for _, _, _, listing in scored_listings]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
