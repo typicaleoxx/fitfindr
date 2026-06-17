@@ -165,7 +165,7 @@ def handle_clear_style_profile() -> tuple[str, str]:
     )
 
 
-def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str, str, str]:
+def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str, str, str, str]:
     """
     Called by Gradio when the user submits a query.
 
@@ -199,6 +199,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
             "",
             "",
             "",
+            "",
         )
 
     # choose the starter wardrobe state from the existing radio options
@@ -219,19 +220,21 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
     outfit_text = (session.get("outfit_suggestion") or "").strip()
     fit_card_text = (session.get("fit_card") or "").strip()
     error_text = (session.get("error") or "").strip()
+    # show the retry explanation only when a fallback search actually ran
+    status_text = (session.get("fallback_message") or "").strip()
 
     # clear later outputs when the agent stops on an earlier failure
     if error_text:
         if not session.get("selected_item"):
-            return error_text, profile_text, "", "", "", ""
+            return error_text, profile_text, "", "", "", "", status_text
         if not fit_card_text:
             if "fit card" in error_text.lower():
-                return listing_text, profile_text, price_text, outfit_text, error_text, trend_text
-            return listing_text, profile_text, price_text, error_text, "", trend_text
+                return listing_text, profile_text, price_text, outfit_text, error_text, trend_text, status_text
+            return listing_text, profile_text, price_text, error_text, "", trend_text, status_text
         if not outfit_text:
-            return listing_text, profile_text, price_text, error_text, "", trend_text
+            return listing_text, profile_text, price_text, error_text, "", trend_text, status_text
         if "fit card" in error_text.lower():
-            return listing_text, profile_text, price_text, outfit_text, error_text, trend_text
+            return listing_text, profile_text, price_text, outfit_text, error_text, trend_text, status_text
 
     # return values in the same order as the gradio output components
     return (
@@ -241,6 +244,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
         outfit_text or "No outfit suggestion is available.",
         fit_card_text or "No fit card is available.",
         trend_text,
+        status_text,
     )
 
 
@@ -278,6 +282,12 @@ Describe what you're looking for — include size and price if you want to filte
 
         submit_btn = gr.Button("Find it", variant="primary")
         clear_profile_btn = gr.Button("Clear Style Profile")
+
+        search_status_output = gr.Textbox(
+            label="🔁 Search status",
+            lines=2,
+            interactive=False,
+        )
 
         with gr.Row():
             listing_output = gr.Textbox(
@@ -332,6 +342,7 @@ Describe what you're looking for — include size and price if you want to filte
                 outfit_output,
                 fitcard_output,
                 trend_output,
+                search_status_output,
             ],
         )
         query_input.submit(
@@ -344,6 +355,7 @@ Describe what you're looking for — include size and price if you want to filte
                 outfit_output,
                 fitcard_output,
                 trend_output,
+                search_status_output,
             ],
         )
         clear_profile_btn.click(

@@ -55,6 +55,11 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "style_profile_updated": False,
         "style_profile_message": "",
         "parsed": {},                # extracted description / size / max_price
+        "retry_attempted": False,    # True when a fallback search ran
+        "retry_reason": "",          # short tag describing the loosened constraint
+        "original_search_parameters": {},  # parameters used for the first search
+        "final_search_parameters": {},     # parameters used for the active results
+        "fallback_message": "",      # user facing explanation of the retry
         "search_results": [],        # list of matching listing dicts
         "selected_item": None,       # top result, passed into suggest_outfit
         "price_comparison": None,    # dict returned by compare_price
@@ -150,6 +155,72 @@ def _prepare_style_profile(query: str) -> tuple[dict, bool, str]:
     )
 
 
+def _clean_size(size) -> str:
+    # trim trailing punctuation so the size reads naturally in the message
+    return str(size or "").strip().strip(".,!?").strip()
+
+
+def _format_budget(max_price) -> str:
+    # render a clean budget phrase only when a price ceiling exists
+    if max_price is None:
+        return ""
+    if float(max_price).is_integer():
+        return f" under ${int(max_price)}"
+    return f" under ${max_price:.2f}"
+
+
+def _build_fallback(parsed: dict) -> tuple[dict | None, str]:
+    """
+    Pick one loosened search to try after an empty first search.
+
+    Returns the loosened parameters and a short reason tag, or (None, "")
+    when there is no single constraint worth relaxing.
+    """
+    # prefer dropping the size filter because it is the most common over-filter
+    if parsed.get("size"):
+        loosened = dict(parsed)
+        loosened["size"] = None
+        return loosened, "removed size filter"
+
+    # otherwise nudge the budget up by a small fixed amount
+    if parsed.get("max_price") is not None:
+        loosened = dict(parsed)
+        loosened["max_price"] = round(parsed["max_price"] * 1.2, 2)
+        return loosened, "increased budget"
+
+    return None, ""
+
+
+def _fallback_success_message(original: dict, reason: str, final: dict) -> str:
+    # explain exactly what was relaxed so the loosened results are not surprising
+    budget = _format_budget(original.get("max_price"))
+    if reason == "removed size filter":
+        return (
+            f"No exact listings were found in size {_clean_size(original['size'])}{budget}, "
+            "so I retried without the size filter. The results below may "
+            "include other sizes."
+        )
+    return (
+        f"No listings were found{budget}, so I retried with the budget raised "
+        f"to {_format_budget(final.get('max_price')).strip()}. The results "
+        "below may cost a bit more."
+    )
+
+
+def _fallback_failure_message(original: dict, reason: str) -> str:
+    # explain that even the relaxed search came back empty
+    budget = _format_budget(original.get("max_price"))
+    if reason == "removed size filter":
+        return (
+            f"No listings matched in size {_clean_size(original['size'])}{budget}, so I "
+            "retried without the size filter, but that returned nothing either."
+        )
+    return (
+        f"No listings matched{budget}, so I retried with a higher budget, but "
+        "that returned nothing either."
+    )
+
+
 def run_agent(query: str, wardrobe: dict) -> dict:
     """
     Main agent entry point. Runs the FitFindr planning loop for a single
@@ -207,6 +278,8 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     # parse only the filters this starter app expects
     session["parsed"] = _parse_query(query)
+    session["original_search_parameters"] = dict(session["parsed"])
+    session["final_search_parameters"] = dict(session["parsed"])
 
     search_results = search_listings(
         description=session["parsed"]["description"],
@@ -215,13 +288,46 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     )
     session["search_results"] = search_results
 
+    # retry once with one loosened constraint when the exact search has no matches
+    if not search_results:
+        fallback_params, retry_reason = _build_fallback(session["parsed"])
+        if fallback_params is not None:
+            session["retry_attempted"] = True
+            session["retry_reason"] = retry_reason
+            session["final_search_parameters"] = fallback_params
+            # stop after one retry so the planning loop cannot continue indefinitely
+            search_results = search_listings(
+                description=fallback_params["description"],
+                size=fallback_params["size"],
+                max_price=fallback_params["max_price"],
+            )
+            session["search_results"] = search_results
+            if search_results:
+                session["fallback_message"] = _fallback_success_message(
+                    session["original_search_parameters"],
+                    retry_reason,
+                    fallback_params,
+                )
+            else:
+                session["fallback_message"] = _fallback_failure_message(
+                    session["original_search_parameters"],
+                    retry_reason,
+                )
+
     # stop here because later tools require a valid selected listing
     if not search_results:
-        session["error"] = (
-            "I could not find any listings that match that description, size, "
-            "and budget. Try increasing the budget, removing the size filter, "
-            "or using a broader description."
-        )
+        if session["retry_attempted"]:
+            session["error"] = (
+                "I could not find any listings using the original request or "
+                "the relaxed search. Try increasing the budget or using a "
+                "broader item description."
+            )
+        else:
+            session["error"] = (
+                "I could not find any listings that match that description, "
+                "size, and budget. Try increasing the budget, removing the "
+                "size filter, or using a broader description."
+            )
         return session
 
     # store the exact selected item before passing it to the outfit tool
@@ -293,9 +399,22 @@ if __name__ == "__main__":
         print(f"\nOutfit: {session['outfit_suggestion']}")
         print(f"\nFit card: {session['fit_card']}")
 
-    print("\n\n=== No-results path ===\n")
+    print("\n\n=== Successful fallback retry: size XS graphic tee ===\n")
     session2 = run_agent(
+        query="Find me a vintage graphic tee under $30 in size XS.",
+        wardrobe=get_example_wardrobe(),
+    )
+    print(f"Retry attempted: {session2['retry_attempted']}")
+    print(f"Retry reason: {session2['retry_reason']}")
+    print(f"Fallback message: {session2['fallback_message']}")
+    if not session2["error"]:
+        print(f"Found via fallback: {session2['selected_item']['title']}")
+
+    print("\n\n=== Failed fallback retry: designer ballgown ===\n")
+    session3 = run_agent(
         query="designer ballgown size XXS under $5",
         wardrobe=get_example_wardrobe(),
     )
-    print(f"Error message: {session2['error']}")
+    print(f"Retry attempted: {session3['retry_attempted']}")
+    print(f"Fallback message: {session3['fallback_message']}")
+    print(f"Error message: {session3['error']}")

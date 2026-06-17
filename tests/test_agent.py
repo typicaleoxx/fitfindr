@@ -447,7 +447,9 @@ def test_empty_search_returns_early_without_later_tools(monkeypatch):
 
     session = agent.run_agent("designer ballgown size XXS under $5", {"items": []})
 
-    assert calls == ["search"]
+    # the empty first search triggers exactly one fallback search, then stops
+    assert calls == ["search", "search"]
+    assert session["retry_attempted"] is True
     assert session["search_results"] == []
     assert session["selected_item"] is None
     assert session["price_comparison"] is None
@@ -743,3 +745,155 @@ def test_empty_search_does_not_call_trend_tool(monkeypatch):
 
     assert trend_called is False
     assert session["style_trend"] is None
+
+
+def fallback_tools(monkeypatch, search_side_effect):
+    """Wire deterministic tool stubs for retry tests and return a call log."""
+    calls = []
+
+    def fake_search_listings(**kwargs):
+        calls.append(("search", dict(kwargs)))
+        return search_side_effect(kwargs)
+
+    monkeypatch.setattr(agent, "search_listings", fake_search_listings)
+    monkeypatch.setattr(
+        agent,
+        "compare_price",
+        lambda new_item: (calls.append(("compare", new_item)), sample_price_comparison())[1],
+    )
+    monkeypatch.setattr(
+        agent,
+        "get_style_trend",
+        lambda new_item, size=None: (calls.append(("trend", new_item)), {"trend_name": None})[1],
+    )
+    monkeypatch.setattr(
+        agent,
+        "suggest_outfit",
+        lambda new_item, wardrobe: (calls.append(("outfit", new_item)), "Outfit")[1],
+    )
+    monkeypatch.setattr(
+        agent,
+        "create_fit_card",
+        lambda outfit, new_item: (calls.append(("fit_card", new_item)), "Card")[1],
+    )
+    return calls
+
+
+def test_successful_first_search_does_not_retry(monkeypatch):
+    selected_item = sample_item()
+    calls = fallback_tools(monkeypatch, lambda kwargs: [selected_item])
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    search_calls = [c for c in calls if c[0] == "search"]
+    assert len(search_calls) == 1
+    assert session["retry_attempted"] is False
+    assert session["fallback_message"] == ""
+    assert session["error"] is None
+
+
+def test_empty_first_search_triggers_exactly_one_retry(monkeypatch):
+    selected_item = sample_item()
+
+    def search(kwargs):
+        # the first call with a size returns nothing, the relaxed call finds an item
+        return [] if kwargs["size"] else [selected_item]
+
+    calls = fallback_tools(monkeypatch, search)
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    search_calls = [c for c in calls if c[0] == "search"]
+    assert len(search_calls) == 2
+    assert session["retry_attempted"] is True
+
+
+def test_retry_removes_size_and_keeps_description_and_budget(monkeypatch):
+    selected_item = sample_item()
+
+    def search(kwargs):
+        return [] if kwargs["size"] else [selected_item]
+
+    calls = fallback_tools(monkeypatch, search)
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    first_search = [c for c in calls if c[0] == "search"][0][1]
+    second_search = [c for c in calls if c[0] == "search"][1][1]
+    assert first_search["size"] == "M"
+    assert second_search["size"] is None
+    assert second_search["description"] == first_search["description"]
+    assert second_search["max_price"] == first_search["max_price"]
+    assert session["retry_reason"] == "removed size filter"
+    assert session["original_search_parameters"]["size"] == "M"
+    assert session["final_search_parameters"]["size"] is None
+
+
+def test_successful_retry_continues_through_workflow_with_fallback_item(monkeypatch):
+    fallback_item = sample_item("fallback")
+
+    def search(kwargs):
+        return [] if kwargs["size"] else [fallback_item]
+
+    calls = fallback_tools(monkeypatch, search)
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    # the fallback item must reach every later tool unchanged
+    assert session["selected_item"] is fallback_item
+    assert ("compare", fallback_item) in calls
+    assert ("trend", fallback_item) in calls
+    assert ("outfit", fallback_item) in calls
+    assert ("fit_card", fallback_item) in calls
+    assert session["outfit_suggestion"] == "Outfit"
+    assert session["fit_card"] == "Card"
+    assert session["error"] is None
+    assert "removed size filter" in session["retry_reason"]
+    assert "retried without the size filter" in session["fallback_message"]
+
+
+def test_failed_retry_stops_before_later_tools(monkeypatch):
+    calls = fallback_tools(monkeypatch, lambda kwargs: [])
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    search_calls = [c for c in calls if c[0] == "search"]
+    later_calls = [c for c in calls if c[0] in {"compare", "trend", "outfit", "fit_card"}]
+    assert len(search_calls) == 2
+    assert later_calls == []
+    assert session["selected_item"] is None
+    assert session["price_comparison"] is None
+    assert session["style_trend"] is None
+    assert session["outfit_suggestion"] is None
+    assert session["fit_card"] is None
+
+
+def test_failed_retry_stores_specific_actionable_error(monkeypatch):
+    fallback_tools(monkeypatch, lambda kwargs: [])
+
+    session = agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    assert session["retry_attempted"] is True
+    assert "original request or the relaxed search" in session["error"]
+    assert "broader item description" in session["error"]
+    assert "returned nothing either" in session["fallback_message"]
+
+
+def test_retry_runs_at_most_once_even_when_both_empty(monkeypatch):
+    calls = fallback_tools(monkeypatch, lambda kwargs: [])
+
+    agent.run_agent("vintage graphic tee under $30 size M", {"items": []})
+
+    search_calls = [c for c in calls if c[0] == "search"]
+    assert len(search_calls) == 2
+
+
+def test_no_constraint_to_loosen_does_not_retry(monkeypatch):
+    calls = fallback_tools(monkeypatch, lambda kwargs: [])
+
+    session = agent.run_agent("designer ballgown", {"items": []})
+
+    search_calls = [c for c in calls if c[0] == "search"]
+    assert len(search_calls) == 1
+    assert session["retry_attempted"] is False
+    assert "could not find any listings" in session["error"]

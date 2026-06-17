@@ -73,7 +73,7 @@ def successful_session():
 def test_successful_session_maps_listing_output(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    listing_output, _, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
+    listing_output, _, _, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert "Faded Band Tee" in listing_output
     assert "Price: $22.00" in listing_output
@@ -84,7 +84,7 @@ def test_successful_session_maps_listing_output(monkeypatch):
 def test_successful_session_maps_outfit_and_fit_card_outputs(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    _, _, _, outfit_output, fit_card_output, _ = app.handle_query(
+    _, _, _, outfit_output, fit_card_output, _, _ = app.handle_query(
         "vintage graphic tee",
         "Example wardrobe",
     )
@@ -96,7 +96,7 @@ def test_successful_session_maps_outfit_and_fit_card_outputs(monkeypatch):
 def test_successful_session_maps_price_comparison_output(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    _, _, price_output, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
+    _, _, price_output, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert "Assessment: Good Deal" in price_output
     assert "Item price: $22.00" in price_output
@@ -108,7 +108,7 @@ def test_successful_session_maps_price_comparison_output(monkeypatch):
 def test_saved_style_profile_displays_clearly(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    _, profile_output, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
+    _, profile_output, _, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert "Saved style profile" in profile_output
     assert "Colors: neutral" in profile_output
@@ -121,7 +121,7 @@ def test_saved_style_profile_displays_clearly(monkeypatch):
 def test_updated_profile_shows_update_status(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    _, profile_output, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
+    _, profile_output, _, _, _, _, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert "Updated this request: yes" in profile_output
     assert "Style profile updated from this request." in profile_output
@@ -134,7 +134,7 @@ def test_missing_profile_state_does_not_crash(monkeypatch):
     session["style_profile_message"] = ""
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: session)
 
-    _, profile_output, _, _, _, _ = app.handle_query("simple tee", "Example wardrobe")
+    _, profile_output, _, _, _, _, _ = app.handle_query("simple tee", "Example wardrobe")
 
     assert "Saved style profile" in profile_output
     assert "No saved preferences yet." in profile_output
@@ -155,7 +155,7 @@ def test_insufficient_price_comparison_output_is_readable(monkeypatch):
     }
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: session)
 
-    _, _, price_output, _, _, _ = app.handle_query("rare tee", "Example wardrobe")
+    _, _, price_output, _, _, _, _ = app.handle_query("rare tee", "Example wardrobe")
 
     assert "Assessment: Insufficient Data" in price_output
     assert "Item price: $22.00" in price_output
@@ -256,7 +256,7 @@ def test_empty_query_does_not_call_run_agent(monkeypatch):
 
     assert called is False
     assert outputs[0].startswith("Enter a clothing request")
-    assert outputs[1:] == ("", "", "", "", "")
+    assert outputs[1:] == ("", "", "", "", "", "")
 
 
 def test_no_results_error_clears_all_content_outputs(monkeypatch):
@@ -300,6 +300,7 @@ def test_no_results_error_clears_all_content_outputs(monkeypatch):
         "",
         "",
         "",
+        "",
     )
 
 
@@ -325,7 +326,7 @@ def test_outfit_failure_preserves_listing_and_clears_fit_card(monkeypatch):
 
     monkeypatch.setattr(app, "run_agent", fake_run_agent)
 
-    listing_output, profile_output, price_output, outfit_output, fit_card_output, trend_output = app.handle_query(
+    listing_output, profile_output, price_output, outfit_output, fit_card_output, trend_output, _ = app.handle_query(
         "vintage graphic tee",
         "Example wardrobe",
     )
@@ -361,7 +362,7 @@ def test_fit_card_failure_preserves_listing_and_outfit(monkeypatch):
 
     monkeypatch.setattr(app, "run_agent", fake_run_agent)
 
-    listing_output, profile_output, price_output, outfit_output, fit_card_output, trend_output = app.handle_query(
+    listing_output, profile_output, price_output, outfit_output, fit_card_output, trend_output, _ = app.handle_query(
         "vintage graphic tee",
         "Example wardrobe",
     )
@@ -385,7 +386,7 @@ def test_missing_optional_listing_fields_do_not_crash(monkeypatch):
 
     monkeypatch.setattr(app, "run_agent", fake_run_agent)
 
-    listing_output, _, _, _, _, _ = app.handle_query("simple tee", "Example wardrobe")
+    listing_output, _, _, _, _, _, _ = app.handle_query("simple tee", "Example wardrobe")
 
     assert listing_output == "Simple Tee"
 
@@ -416,22 +417,22 @@ def test_failed_request_does_not_reuse_previous_success(monkeypatch):
     assert "Faded Band Tee" in first_outputs[0]
     assert second_outputs[0] == "I could not find any listings that match that description."
     assert "No saved preferences yet." in second_outputs[1]
-    assert second_outputs[2:] == ("", "", "", "")
+    assert second_outputs[2:] == ("", "", "", "", "")
 
 
-def test_handle_query_returns_six_outputs(monkeypatch):
+def test_handle_query_returns_seven_outputs(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
     outputs = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert isinstance(outputs, tuple)
-    assert len(outputs) == 6
+    assert len(outputs) == 7
 
 
 def test_matching_trend_displays_clearly(monkeypatch):
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: successful_session())
 
-    _, _, _, _, _, trend_output = app.handle_query("vintage graphic tee", "Example wardrobe")
+    _, _, _, _, _, trend_output, _ = app.handle_query("vintage graphic tee", "Example wardrobe")
 
     assert "Trend: graphic tee layering" in trend_output
     assert "layer the graphic tee over a fitted long sleeve top" in trend_output
@@ -451,7 +452,7 @@ def test_no_trend_match_displays_fallback_message(monkeypatch):
     }
     monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: session)
 
-    _, _, _, _, _, trend_output = app.handle_query("rare item", "Example wardrobe")
+    _, _, _, _, _, trend_output, _ = app.handle_query("rare item", "Example wardrobe")
 
     assert trend_output == (
         "No matching trend was found for this item. "
@@ -481,4 +482,106 @@ def test_failed_request_clears_trend_output(monkeypatch):
 
     outputs = app.handle_query("designer ballgown", "Example wardrobe")
 
-    assert outputs[-1] == ""
+    # trend output sits at index 5, search status at index 6, both cleared here
+    assert outputs[5] == ""
+    assert outputs[6] == ""
+
+
+def fallback_success_session():
+    session = successful_session()
+    session["retry_attempted"] = True
+    session["retry_reason"] = "removed size filter"
+    session["fallback_message"] = (
+        "No exact listings were found in size XS under $30, so I retried "
+        "without the size filter. The results below may include other sizes."
+    )
+    return session
+
+
+def test_successful_fallback_message_displays(monkeypatch):
+    monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: fallback_success_session())
+
+    outputs = app.handle_query("vintage graphic tee size XS", "Example wardrobe")
+
+    assert "retried without the size filter" in outputs[6]
+    assert "size XS" in outputs[6]
+
+
+def test_successful_fallback_still_shows_normal_outputs(monkeypatch):
+    monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: fallback_success_session())
+
+    listing, profile, price, outfit, fit_card, trend, status = app.handle_query(
+        "vintage graphic tee size XS",
+        "Example wardrobe",
+    )
+
+    assert "Faded Band Tee" in listing
+    assert "Saved style profile" in profile
+    assert "Assessment: Good Deal" in price
+    assert outfit == "Wear it with baggy jeans and chunky sneakers."
+    assert fit_card == "Faded tee, baggy denim, chunky sneakers."
+    assert "Trend: graphic tee layering" in trend
+    assert "retried without the size filter" in status
+
+
+def test_failed_fallback_clears_later_outputs_and_shows_message(monkeypatch):
+    def fake_run_agent(query, wardrobe):
+        return {
+            "query": query,
+            "style_profile": None,
+            "style_profile_updated": False,
+            "style_profile_message": "No saved style preferences yet.",
+            "parsed": {},
+            "retry_attempted": True,
+            "retry_reason": "removed size filter",
+            "fallback_message": (
+                "No listings matched in size XXS under $5, so I retried without "
+                "the size filter, but that returned nothing either."
+            ),
+            "search_results": [],
+            "selected_item": None,
+            "price_comparison": None,
+            "style_trend": None,
+            "wardrobe": wardrobe,
+            "outfit_suggestion": None,
+            "fit_card": None,
+            "error": (
+                "I could not find any listings using the original request or "
+                "the relaxed search. Try increasing the budget or using a "
+                "broader item description."
+            ),
+        }
+
+    monkeypatch.setattr(app, "run_agent", fake_run_agent)
+
+    listing, profile, price, outfit, fit_card, trend, status = app.handle_query(
+        "designer ballgown size XXS under $5",
+        "Example wardrobe",
+    )
+
+    assert "could not find any listings using the original request" in listing
+    assert price == ""
+    assert outfit == ""
+    assert fit_card == ""
+    assert trend == ""
+    assert "returned nothing either" in status
+
+
+def test_new_request_clears_old_fallback_message_when_no_retry(monkeypatch):
+    sessions = [fallback_success_session(), successful_session()]
+    monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: sessions.pop(0))
+
+    first_outputs = app.handle_query("vintage graphic tee size XS", "Example wardrobe")
+    second_outputs = app.handle_query("vintage graphic tee", "Example wardrobe")
+
+    assert "retried without the size filter" in first_outputs[6]
+    assert second_outputs[6] == ""
+
+
+def test_handle_query_output_count_matches_event_binding(monkeypatch):
+    monkeypatch.setattr(app, "run_agent", lambda query, wardrobe: fallback_success_session())
+
+    outputs = app.handle_query("vintage graphic tee size XS", "Example wardrobe")
+
+    # the seven outputs must line up with the gradio event binding order
+    assert len(outputs) == 7

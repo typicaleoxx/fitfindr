@@ -218,6 +218,44 @@ I will compare the implementation against this plan, inspect the diff, confirm c
 **How the feature will be demonstrated using two interactions:**
 First, the user submits `I usually wear neutral colors, oversized tops, baggy jeans, and chunky sneakers. Find me a vintage graphic tee under $30 in size M.` The profile saves `neutral`, `oversized`, `baggy jeans`, and `chunky sneakers`. Second, the user submits `Find me a denim jacket under $45 in size M.` The second outfit prompt includes those saved preferences even though they are not repeated in the second request.
 
+## Retry Logic With Fallback
+
+Retry Logic With Fallback gives the agent one automatic second chance when the exact search returns nothing, so a single strict filter does not end the interaction with an empty result.
+
+**What state triggers the retry:**
+The retry runs only when the first `search_listings` call returns an empty list. A non-empty first result never triggers a retry.
+
+**Which constraint is loosened:**
+Exactly one constraint is loosened per interaction. The preferred fallback removes the size filter by retrying with `size=None` while keeping `description` and `max_price` unchanged. If the original request had no size filter, the single alternative raises `max_price` by twenty percent and keeps `description` and `size` unchanged. If the request has neither a size nor a budget, there is no constraint to loosen and no retry is attempted.
+
+**How many retries are allowed:**
+At most one. After the single fallback search the loop stops regardless of the outcome, so it can never retry indefinitely.
+
+**What gets stored in session state:**
+- `retry_attempted` (`bool`): `True` when a fallback search was run.
+- `retry_reason` (`str`): a short tag such as `"removed size filter"` or `"increased budget"`.
+- `original_search_parameters` (`dict`): the parsed `description`, `size`, and `max_price` from the first search.
+- `final_search_parameters` (`dict`): the parameters actually used for the active results, equal to the original parameters when no retry happened.
+- `fallback_message` (`str`): the user facing explanation shown when a retry happened.
+
+**What the user is told:**
+On a successful fallback the message states that the exact search found nothing, names the constraint that was relaxed, and notes that the results may differ on that constraint, for example other sizes or a slightly higher price. On a failed fallback the message states that both the original request and the relaxed search returned nothing and suggests a concrete next step.
+
+**What happens if the retry also returns no results:**
+The workflow sets a specific actionable error in `session["error"]`, stores the failed `fallback_message`, and returns early without selecting an item.
+
+**Why later tools are not called when both searches fail:**
+`compare_price`, `get_style_trend`, `suggest_outfit`, and `create_fit_card` all need a real selected listing. Running them with no item would produce a price check, trend, outfit, and fit card for nothing, so the loop stops once both searches are empty.
+
+**How the feature will be tested:**
+Tests cover a successful first search that does not retry, an empty first search that retries exactly once, size removal when a size is present, description and budget staying unchanged, the stored retry keys, a successful fallback continuing through every later tool with the fallback item passed through unchanged, a failed fallback stopping before later tools with a specific error, the retry running at most once, and the existing happy path and error handling still passing. The app tests cover the fallback message displaying, normal outputs still appearing on success, later outputs clearing on failure, and an old fallback message clearing on a later non-retry request.
+
+**How it will be shown in the demo:**
+The demo submits `Find me a vintage graphic tee under $30 in size XS.`. No size XS graphic tee exists, so the first search is empty, the agent retries without the size filter, the interface explains that the size filter was removed, the fallback returns a listing, and the workflow continues through price comparison, trend insight, outfit suggestion, and fit card. A second demo submits `designer ballgown size XXS under $5`, where both searches fail and the workflow stops with an actionable error.
+
+**How generated code will be reviewed:**
+I will confirm there is exactly one retry, only one loosened constraint, no recursion or background work, the required tool signatures unchanged, price comparison, style profile memory, and trend awareness intact, the fallback item flowing through later tools without being rebuilt, later tools skipped when both searches fail, and the user message clearly explaining what changed. I will inspect the diff, run targeted and full tests, and demonstrate both a successful and a failed fallback.
+
 ## Planning Loop
 
 The planning loop is implemented by `run_agent(query: str, wardrobe: dict) -> dict` in `agent.py`. It should use conditional logic and should not call every tool unconditionally.
@@ -232,28 +270,30 @@ The planning loop is implemented by `run_agent(query: str, wardrobe: dict) -> di
    - `description`: the main item and style words, such as `"vintage graphic tee"`.
    - `size`: a size phrase if present, such as `"M"` or `"US 8"`, otherwise `None`.
    - `max_price`: a dollar amount after words like `"under"` or `"$"`, converted to `float`, otherwise `None`.
-8. Store the parsed values in `session["parsed"]`, for example `{"description": "vintage graphic tee", "size": "M", "max_price": 30.0}`.
+8. Store the parsed values in `session["parsed"]`, for example `{"description": "vintage graphic tee", "size": "M", "max_price": 30.0}`. Store the same values in `session["original_search_parameters"]` and `session["final_search_parameters"]`.
 9. Call `search_listings(description=session["parsed"]["description"], size=session["parsed"]["size"], max_price=session["parsed"]["max_price"])`.
 10. Store the returned list in `session["search_results"]`.
 11. Check `session["search_results"]` immediately after search.
-12. If the list is empty, set `session["error"]` to a clear no-results message and return the session early.
-13. The workflow stops on an empty result because there is no selected listing to pass into `suggest_outfit`, and creating an outfit or fit card without an item would make later outputs unreliable.
-14. If results exist, choose the first listing because `search_listings` sorts best matches first.
-15. Store that listing in `session["selected_item"]`.
-16. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
-17. Store the returned dict in `session["price_comparison"]`.
-18. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
-19. Pass the same stored listing into `get_style_trend` by calling `get_style_trend(new_item=session["selected_item"], size=session["parsed"]["size"])`.
-20. Store the returned dict in `session["style_trend"]`.
-21. Continue even when no trend matched because trend context is optional.
-22. Create a wardrobe copy, attach `session["style_profile"]` and `session["style_trend"]` to it, and pass that copy into `suggest_outfit`.
-23. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
-24. If the outfit result is not usable, set `session["error"]` and return early.
-25. If usable, store it in `session["outfit_suggestion"]`.
-26. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
-27. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
-28. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
-29. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, style profile, style trend, outfit suggestion, and fit card are all available.
+12. If the list is empty, build one fallback that loosens a single constraint. Prefer `size=None` when a size is present, otherwise raise `max_price` by twenty percent. If neither a size nor a budget is present, skip the retry.
+13. When a fallback is built, set `session["retry_attempted"] = True`, store `session["retry_reason"]` and `session["final_search_parameters"]`, retry `search_listings` once with the loosened parameters, and replace `session["search_results"]` with the fallback results.
+14. If the fallback finds listings, set a successful `session["fallback_message"]` explaining what was relaxed. If it still finds nothing, set a failed `session["fallback_message"]`.
+15. If `session["search_results"]` is still empty after the retry, or no retry was possible, set a specific actionable `session["error"]` and return the session early. The workflow stops because there is no selected listing to pass into `suggest_outfit`, and creating an outfit or fit card without an item would make later outputs unreliable. The loop never retries more than once.
+16. If results exist, choose the first listing because `search_listings` sorts best matches first. This is the fallback listing when a retry succeeded.
+17. Store that listing in `session["selected_item"]`.
+18. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
+19. Store the returned dict in `session["price_comparison"]`.
+20. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
+21. Pass the same stored listing into `get_style_trend` by calling `get_style_trend(new_item=session["selected_item"], size=session["parsed"]["size"])`.
+22. Store the returned dict in `session["style_trend"]`.
+23. Continue even when no trend matched because trend context is optional.
+24. Create a wardrobe copy, attach `session["style_profile"]` and `session["style_trend"]` to it, and pass that copy into `suggest_outfit`.
+25. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
+26. If the outfit result is not usable, set `session["error"]` and return early.
+27. If usable, store it in `session["outfit_suggestion"]`.
+28. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
+29. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
+30. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
+31. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, style profile, style trend, outfit suggestion, and fit card are all available.
 
 ## State Management
 
@@ -266,6 +306,11 @@ The actual session structure is created by `_new_session(query, wardrobe)` in `a
 | `style_profile_updated` | `True` when new current-query preferences were saved successfully, otherwise `False`. | Written during profile handling at the start of `run_agent`. | The app profile output and tests. |
 | `style_profile_message` | A short status message such as loaded, updated, unavailable, or empty. | Written during profile handling at the start of `run_agent`. | The app profile output and tests. |
 | `parsed` | A dict containing extracted `description`, `size`, and `max_price`. | Written after query parsing. | `search_listings` call arguments. |
+| `retry_attempted` | `True` when a fallback search was run after an empty first search, otherwise `False`. | Written during the search step. | The app fallback status and tests. |
+| `retry_reason` | A short tag such as `"removed size filter"` or `"increased budget"`, empty when no retry happened. | Written when a fallback search is built. | The app fallback status and tests. |
+| `original_search_parameters` | The parsed `description`, `size`, and `max_price` from the first search. | Written after query parsing. | The fallback message and tests. |
+| `final_search_parameters` | The parameters used for the active results, equal to the original parameters when no retry happened. | Written after parsing and again when a fallback is built. | The fallback message and tests. |
+| `fallback_message` | The user facing explanation of the retry, empty when no retry happened. | Written when a fallback search runs. | `app.handle_query` status output and tests. |
 | `search_results` | A list of listing dicts returned by `search_listings`. | Written right after `search_listings` returns. | The result check and selected item step. |
 | `selected_item` | The top listing dict chosen from `search_results[0]`. | Written only if search results are not empty. | `compare_price`, `suggest_outfit`, and `create_fit_card`. |
 | `price_comparison` | A dict returned by `compare_price` with price assessment, averages, differences, and comparable item summaries. | Written after `selected_item` is stored. | The app price output panel and tests. |
@@ -282,6 +327,8 @@ The user does not manually reenter the selected item, price comparison, or outfi
 | Tool | Failure trigger | Tool response | Workflow decision | Specific user facing response | Suggested next action |
 |---|---|---|---|---|---|
 | `search_listings` | No listings match the parsed `description`, `size`, and `max_price`. | Returns `[]`. | Store `[]` in `session["search_results"]`, set `session["error"]`, return early, and do not call later tools. | `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.` | User should broaden the search, remove one filter, or try another item type. |
+| `search_listings` retry | The first search returns `[]` and a size or budget is present. | The agent loosens one constraint and retries `search_listings` once. | Store `retry_attempted`, `retry_reason`, `final_search_parameters`, and a successful `fallback_message`, then continue if the fallback finds listings. | `No exact listings were found in size M under $30, so I retried without the size filter. The results below may include other sizes.` | User sees results from the relaxed search and is told what was adjusted. |
+| `search_listings` retry | Both the first search and the single fallback return `[]`, or there was no constraint to loosen. | The agent stops after at most one retry. | Set a specific actionable `session["error"]`, store the failed `fallback_message`, and return early without selecting an item. | `I could not find any listings using the original request or the relaxed search. Try increasing the budget or using a broader item description.` | User should broaden the description or raise the budget. Later tools are not called. |
 | `compare_price` | The selected item has no usable price, listings cannot load, or no comparable listings have usable prices. | Returns a structured dict with `assessment` set to `"insufficient data"`. | Store the dict in `session["price_comparison"]` and continue to `suggest_outfit`. | `There is not enough comparable price data for this listing yet.` | User can still use the listing, outfit idea, and fit card. I should keep the output readable without blocking the workflow. |
 | Style profile storage | The profile file is missing. | `load_style_profile()` returns the empty normalized profile. | Continue normally and save a new runtime file only if the current query contains supported preferences. | `No saved style preferences yet.` | User can keep searching. New clear preferences in the request will create the profile. |
 | Style profile storage | The profile file contains invalid JSON or unsupported fields. | `load_style_profile()` ignores invalid data and returns a normalized profile. | Continue the main workflow and avoid exposing raw file errors. | `Style profile was reset because saved data could not be read.` | I should keep the profile optional and avoid blocking search or styling. |
@@ -318,11 +365,18 @@ search_listings(description, size, max_price)
 Search result check
   |                         \
   | results found            \ no results
-  v                           v
-Session state              Early return error branch
-  |                         |
-  | selected_item stored    | session["error"] set
-  |                         | final session returned
+  |                           v
+  |                  Fallback retry (loosen one constraint, at most once)
+  |                  retry search_listings(size=None) or raised max_price
+  |                           |                         \
+  |                           | fallback found           \ fallback empty or no constraint
+  |                           v                           v
+  |<--------------------------+                  Early return error branch
+  v                                              session["error"] and fallback_message set
+Session state                                    final session returned
+  |
+  | selected_item stored (fallback item when a retry succeeded)
+  | retry_attempted and fallback_message stored when a retry happened
   v
 compare_price(new_item=selected_item)
   |
@@ -409,6 +463,10 @@ I will use the Style Profile Memory section, the storage approach, and the exist
 ### Phase 10: Add trend awareness stretch tool
 
 I will use the Tool 5 specification, the curated `data/trends.json` snapshot, and the existing session structure. I will add `get_style_trend(new_item, size=None)` to `tools.py` as a small deterministic function that loads the trend snapshot, scores trends by shared category and style tags, uses size only as a small compatibility nudge, and returns the best matching trend or the documented empty result. It makes no network or model calls and does not mutate the selected item. I will call it in `run_agent` after the selected item is stored and before `suggest_outfit`, store the result in `session["style_trend"]`, and attach it to the same wardrobe copy that carries the style profile. I will extend the `suggest_outfit` prompt so it incorporates the trend styling note when one is present, without describing the trend as owned clothing. I will add one compact Trend Insight panel to the interface without redesigning the rest of the app. Tests should verify matching, fields, the empty result, safe failure, no mutation, determinism, agent state flow, prompt inclusion, and app display. I will review the implementation against the plan, run the test suite, confirm price comparison and style profile memory still work, and launch the app to confirm the trend visibly affects the outfit. The trend snapshot is curated by hand from public trend pages and does not update automatically. I will not add live scraping, scheduled jobs, a database, or retry fallback in this phase.
+
+### Phase 11: Add adaptive search retry
+
+I will use the Retry Logic With Fallback section, the planning loop, and the state management table. I will update `run_agent` so that an empty first search triggers exactly one fallback search that loosens a single constraint, preferring `size=None` and otherwise raising `max_price` by twenty percent, while keeping the other parameters unchanged. I will store `retry_attempted`, `retry_reason`, `original_search_parameters`, `final_search_parameters`, and `fallback_message`, continue the normal workflow when the fallback finds a listing, and set a specific actionable error when both searches fail. The fallback listing flows into `compare_price`, `get_style_trend`, `suggest_outfit`, and `create_fit_card` without being rebuilt, and those tools are skipped when both searches fail. I will surface the fallback message in one small interface status output without redesigning the app. Tests should verify no retry on a successful first search, exactly one retry on an empty first search, size removal, unchanged description and budget, the stored keys, a successful fallback continuing through every tool, a failed fallback stopping early with a clear error, the retry running at most once, and the app fallback message displaying and clearing. I will not change `search_listings`, add recursion, or loosen more than one constraint, and price comparison, style profile memory, and trend awareness stay intact.
 
 ## Complete Interaction Walkthrough
 
@@ -525,26 +583,51 @@ I will use the Tool 5 specification, the curated `data/trends.json` snapshot, an
 **Final user output:**
 The user sees the top listing details, the price assessment, the trend insight, the outfit suggestion, and the shareable fit card caption. The outfit visibly reflects the trend styling note. `session["error"]` remains `None`.
 
-### No results path
+### Successful fallback retry path
+
+**Example user query:** `"Find me a vintage graphic tee under $30 in size XS."`
+
+**Step 1: Parse the query**
+- Example parsed value: `{"description": "vintage graphic tee", "size": "XS", "max_price": 30.0}`.
+- State keys updated: `session["parsed"]`, `session["original_search_parameters"]`, `session["final_search_parameters"]`.
+
+**Step 2: First search**
+- Tool called: `search_listings`.
+- Exact arguments: `description="vintage graphic tee"`, `size="XS"`, `max_price=30.0`.
+- Example return value: `[]` because no graphic tee is listed in size XS.
+
+**Step 3: Fallback retry**
+- The first result was empty and a size is present, so the agent loosens one constraint.
+- Tool called: `search_listings`.
+- Exact arguments: `description="vintage graphic tee"`, `size=None`, `max_price=30.0`.
+- Example return value: a non-empty list with `lst_006` first.
+- State keys updated: `session["retry_attempted"] = True`, `session["retry_reason"] = "removed size filter"`, `session["final_search_parameters"]`, `session["search_results"]`, and a successful `session["fallback_message"]`.
+
+**Step 4: Continue the normal workflow**
+- `session["selected_item"]` is set to the fallback listing and passed unchanged into `compare_price`, `get_style_trend`, `suggest_outfit`, and `create_fit_card`.
+
+**Final user output:**
+The interface shows the fallback message `No exact listings were found in size XS under $30, so I retried without the size filter. The results below may include other sizes.` along with the listing, price assessment, trend insight, outfit suggestion, and fit card.
+
+### Failed fallback retry path
 
 **Example user query:** `"designer ballgown size XXS under $5"`
 
 **Step 1: Parse the query**
-- Tool called: none.
-- Exact arguments: none.
 - Example parsed value: `{"description": "designer ballgown", "size": "XXS", "max_price": 5.0}`.
-- State key updated: `session["parsed"]`.
-- Next conditional decision: because `description` is present, call `search_listings`.
 
-**Step 2: Search listings**
+**Step 2: First search**
 - Tool called: `search_listings`.
 - Exact arguments: `description="designer ballgown"`, `size="XXS"`, `max_price=5.0`.
 - Example return value: `[]`.
-- State key updated: `session["search_results"]`.
-- Next conditional decision: because the list is empty, set `session["error"]` and return early.
+
+**Step 3: Fallback retry**
+- A size is present, so the agent retries once with `size=None`, `description="designer ballgown"`, `max_price=5.0`.
+- Example return value: `[]` because no listing matches the description at all.
+- State keys updated: `session["retry_attempted"] = True`, `session["retry_reason"] = "removed size filter"`, a failed `session["fallback_message"]`, and `session["error"]`.
 
 **Final user output:**
-`I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.`
+`I could not find any listings using the original request or the relaxed search. Try increasing the budget or using a broader item description.`
 
 `compare_price`, `get_style_trend`, `suggest_outfit`, and `create_fit_card` are not called. `session["selected_item"]`, `session["price_comparison"]`, `session["style_trend"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.
 
