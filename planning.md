@@ -125,36 +125,90 @@ The workflow stores the returned dict in `session["price_comparison"]` and conti
 
 ### Additional Tools
 
-The required version uses the first three tools. The stretch version adds `compare_price` as a fourth local tool. Query parsing will happen inside `run_agent` before calling `search_listings`.
+The required version uses the first three tools. The stretch version adds `compare_price` as a fourth local tool and style profile helpers in `style_profile.py`. Query parsing will happen inside `run_agent` before calling `search_listings`.
+
+## Style Profile Memory
+
+Style Profile Memory stores clear fashion preferences from earlier requests so later outfit suggestions can use them without the user repeating the same details.
+
+**What style information is stored:**
+The profile stores only fashion preferences needed by this project: `preferred_colors`, `preferred_styles`, `preferred_fits`, `preferred_shoes`, `preferred_bottoms`, `preferred_layers`, and `updated_at`. It does not store API keys, personal identifiers, email addresses, full chat history, or unrelated user data.
+
+**Where it is stored:**
+The runtime profile is stored in `data/style_profile.local.json`. This file is created at runtime and ignored by Git so personal style data from testing is not committed. The documented empty profile structure is created in code by `style_profile.py` instead of committing real user data.
+
+**How preferences are extracted from a user request:**
+`extract_style_preferences(query: str) -> dict` uses a deterministic phrase parser. It looks for supported color, style, fit, shoe, bottom, and layer terms that are clearly present in the request, such as `neutral`, `vintage`, `oversized`, `baggy jeans`, and `chunky sneakers`. It does not call the text service and does not infer sensitive or unrelated traits.
+
+**When a new profile is created:**
+A new empty profile is created in memory when the runtime profile file is missing. If the current query contains supported preferences, those preferences are merged into the empty structure and saved to `data/style_profile.local.json`.
+
+**When an existing profile is loaded:**
+At the start of every `run_agent` call, `load_style_profile()` reads the saved runtime file if it exists. The loaded profile is normalized before the query is parsed for listings or any tool is called.
+
+**How new preferences update an existing profile:**
+`update_style_profile(current_profile, new_preferences)` returns a new dict that preserves existing values, appends newly found values, removes empty values, normalizes values to lowercase where appropriate, and updates `updated_at` with a clear UTC timestamp. Existing preferences are not replaced just because the current query is shorter.
+
+**How duplicate values are avoided:**
+Each preference list is normalized and merged in stable order. A value already present in the profile is not added again, so repeated phrases like `baggy jeans` or `chunky sneakers` remain single entries.
+
+**How the profile reaches `suggest_outfit`:**
+`run_agent` makes a copy of the wardrobe dict, attaches `wardrobe_with_profile["style_profile"] = session["style_profile"]`, and passes that copy into `suggest_outfit(new_item, wardrobe)`. The original wardrobe object is not mutated. `suggest_outfit` reads optional `style_profile` context from the wardrobe dict and separates saved preferences from owned wardrobe items in the prompt.
+
+**What happens when no profile exists:**
+The workflow uses the empty normalized profile structure. Outfit generation still works normally, and the profile display says no saved preferences yet.
+
+**What happens when the storage file is missing:**
+`load_style_profile()` returns an empty normalized profile without raising. If the current request has preferences, the profile is saved during the same interaction.
+
+**What happens when the storage file contains invalid data:**
+Invalid JSON, missing fields, unsupported fields, or non-list preference fields are ignored safely. The loader returns an empty or normalized profile and the main workflow continues.
+
+**How the user can clear the saved profile:**
+The interface includes a Clear Style Profile control. It calls `clear_style_profile()`, resets the runtime file to the empty profile structure, updates the profile display, and returns a clear success or failure message without restarting the app.
+
+**How the feature will be tested:**
+Tests cover missing, valid, invalid, incomplete, and unsupported profile file data; saving; mocked write failure; merging and duplicate removal; deterministic extraction; clearing; agent state flow; wardrobe copy behavior; prompt inclusion; app display; output order; and two-interaction memory reuse with mocked text responses.
+
+**How generated code will be reviewed and revised:**
+I will compare the implementation against this plan, inspect the diff, confirm comments stay short and natural, run targeted and full tests, verify the runtime profile file is ignored, and revise any behavior that mutates input data, stores unsupported information, changes required tool signatures, weakens price comparison, or blocks the main workflow on storage failure.
+
+**How the feature will be demonstrated using two interactions:**
+First, the user submits `I usually wear neutral colors, oversized tops, baggy jeans, and chunky sneakers. Find me a vintage graphic tee under $30 in size M.` The profile saves `neutral`, `oversized`, `baggy jeans`, and `chunky sneakers`. Second, the user submits `Find me a denim jacket under $45 in size M.` The second outfit prompt includes those saved preferences even though they are not repeated in the second request.
 
 ## Planning Loop
 
 The planning loop is implemented by `run_agent(query: str, wardrobe: dict) -> dict` in `agent.py`. It should use conditional logic and should not call every tool unconditionally.
 
 1. Initialize `session` by calling `_new_session(query, wardrobe)`.
-2. Parse the user request into search parameters. The parser should extract:
+2. Load the saved style profile with `load_style_profile()`.
+3. Extract new style preferences from the current query with `extract_style_preferences(query)`.
+4. Merge and save the profile only when useful preferences are found.
+5. Store `session["style_profile"]`, `session["style_profile_updated"]`, and `session["style_profile_message"]`.
+6. Continue the main workflow even when profile storage fails.
+7. Parse the user request into search parameters. The parser should extract:
    - `description`: the main item and style words, such as `"vintage graphic tee"`.
    - `size`: a size phrase if present, such as `"M"` or `"US 8"`, otherwise `None`.
    - `max_price`: a dollar amount after words like `"under"` or `"$"`, converted to `float`, otherwise `None`.
-3. Store the parsed values in `session["parsed"]`, for example `{"description": "vintage graphic tee", "size": "M", "max_price": 30.0}`.
-4. Call `search_listings(description=session["parsed"]["description"], size=session["parsed"]["size"], max_price=session["parsed"]["max_price"])`.
-5. Store the returned list in `session["search_results"]`.
-6. Check `session["search_results"]` immediately after search.
-7. If the list is empty, set `session["error"]` to a clear no-results message and return the session early.
-8. The workflow stops on an empty result because there is no selected listing to pass into `suggest_outfit`, and creating an outfit or fit card without an item would make later outputs unreliable.
-9. If results exist, choose the first listing because `search_listings` sorts best matches first.
-10. Store that listing in `session["selected_item"]`.
-11. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
-12. Store the returned dict in `session["price_comparison"]`.
-13. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
-14. Pass the same stored listing into `suggest_outfit` by calling `suggest_outfit(new_item=session["selected_item"], wardrobe=session["wardrobe"])`.
-15. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
-16. If the outfit result is not usable, set `session["error"]` and return early.
-17. If usable, store it in `session["outfit_suggestion"]`.
-18. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
-19. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
-20. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
-21. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, outfit suggestion, and fit card are all available.
+8. Store the parsed values in `session["parsed"]`, for example `{"description": "vintage graphic tee", "size": "M", "max_price": 30.0}`.
+9. Call `search_listings(description=session["parsed"]["description"], size=session["parsed"]["size"], max_price=session["parsed"]["max_price"])`.
+10. Store the returned list in `session["search_results"]`.
+11. Check `session["search_results"]` immediately after search.
+12. If the list is empty, set `session["error"]` to a clear no-results message and return the session early.
+13. The workflow stops on an empty result because there is no selected listing to pass into `suggest_outfit`, and creating an outfit or fit card without an item would make later outputs unreliable.
+14. If results exist, choose the first listing because `search_listings` sorts best matches first.
+15. Store that listing in `session["selected_item"]`.
+16. Pass the same stored listing into `compare_price` by calling `compare_price(new_item=session["selected_item"])`.
+17. Store the returned dict in `session["price_comparison"]`.
+18. Continue even when the price comparison assessment is `"insufficient data"` because the styling tools only require a selected listing.
+19. Create a wardrobe copy, attach `session["style_profile"]` to it, and pass that copy into `suggest_outfit`.
+20. Validate the outfit result by checking that it is a string and not empty after stripping whitespace.
+21. If the outfit result is not usable, set `session["error"]` and return early.
+22. If usable, store it in `session["outfit_suggestion"]`.
+23. Pass the same stored outfit and listing into `create_fit_card` by calling `create_fit_card(outfit=session["outfit_suggestion"], new_item=session["selected_item"])`.
+24. Validate the fit card result by checking that it is a string and not empty after stripping whitespace.
+25. Store the fit card in `session["fit_card"]` when usable. If it is not usable, set `session["error"]`.
+26. Return the final session dict. On success, `session["error"]` is `None` and the selected listing, price comparison, style profile, outfit suggestion, and fit card are all available.
 
 ## State Management
 
@@ -163,6 +217,9 @@ The actual session structure is created by `_new_session(query, wardrobe)` in `a
 | State key | What it stores | When it is written | Later reader |
 |---|---|---|---|
 | `query` | The original user query string. | Written when `_new_session` is called. | The query parser in `run_agent`. |
+| `style_profile` | The normalized saved style profile, possibly updated with current query preferences. | Written after profile load, extraction, and optional save. | `suggest_outfit`, the app profile output, and tests. |
+| `style_profile_updated` | `True` when new current-query preferences were saved successfully, otherwise `False`. | Written during profile handling at the start of `run_agent`. | The app profile output and tests. |
+| `style_profile_message` | A short status message such as loaded, updated, unavailable, or empty. | Written during profile handling at the start of `run_agent`. | The app profile output and tests. |
 | `parsed` | A dict containing extracted `description`, `size`, and `max_price`. | Written after query parsing. | `search_listings` call arguments. |
 | `search_results` | A list of listing dicts returned by `search_listings`. | Written right after `search_listings` returns. | The result check and selected item step. |
 | `selected_item` | The top listing dict chosen from `search_results[0]`. | Written only if search results are not empty. | `compare_price`, `suggest_outfit`, and `create_fit_card`. |
@@ -180,6 +237,9 @@ The user does not manually reenter the selected item, price comparison, or outfi
 |---|---|---|---|---|---|
 | `search_listings` | No listings match the parsed `description`, `size`, and `max_price`. | Returns `[]`. | Store `[]` in `session["search_results"]`, set `session["error"]`, return early, and do not call later tools. | `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.` | User should broaden the search, remove one filter, or try another item type. |
 | `compare_price` | The selected item has no usable price, listings cannot load, or no comparable listings have usable prices. | Returns a structured dict with `assessment` set to `"insufficient data"`. | Store the dict in `session["price_comparison"]` and continue to `suggest_outfit`. | `There is not enough comparable price data for this listing yet.` | User can still use the listing, outfit idea, and fit card. I should keep the output readable without blocking the workflow. |
+| Style profile storage | The profile file is missing. | `load_style_profile()` returns the empty normalized profile. | Continue normally and save a new runtime file only if the current query contains supported preferences. | `No saved style preferences yet.` | User can keep searching. New clear preferences in the request will create the profile. |
+| Style profile storage | The profile file contains invalid JSON or unsupported fields. | `load_style_profile()` ignores invalid data and returns a normalized profile. | Continue the main workflow and avoid exposing raw file errors. | `Style profile was reset because saved data could not be read.` | I should keep the profile optional and avoid blocking search or styling. |
+| Style profile storage | Saving or clearing the profile fails. | `save_style_profile()` or `clear_style_profile()` returns `False`. | Continue listing search, price comparison, outfit generation, and fit card generation. | `Style profile could not be saved, but the search can continue.` | User can still use all main outputs. I should check local file permissions. |
 | `suggest_outfit` | `wardrobe["items"]` is empty or has too little useful information. | Returns a general styling suggestion for `new_item` instead of an empty string. | Store the non-empty suggestion and continue to `create_fit_card`. | `I do not have saved closet pieces for you yet, so I made a general styling idea for this item.` | User can keep going or later add wardrobe items for more personal suggestions. |
 | `suggest_outfit` | The text request raises an exception or returns unusable text. | Returns a clear fallback styling message if possible. | If fallback text is non-empty, store it and continue. If empty, set `session["error"]` and stop. | `I found a listing, but I could not generate an outfit idea right now. Try again, or use a simpler styling request.` | User should retry or simplify the request. I should check the API key and text request error handling. |
 | `create_fit_card` | `outfit` is empty or whitespace. | Returns a descriptive error message string and does not raise an exception. | Treat the missing outfit as a workflow error, set `session["error"]`, and return without a successful fit card. | `I found an item, but I need an outfit suggestion before I can make a fit card.` | I should rerun outfit generation before calling `create_fit_card`. |
@@ -191,6 +251,10 @@ The user does not manually reenter the selected item, price comparison, or outfi
 User query
   |
   | raw natural language request
+  v
+Style profile memory
+  |
+  | load saved profile, extract current preferences, save useful updates
   v
 Query parsing inside run_agent
   |
@@ -222,7 +286,11 @@ Session state
   | price_comparison stored
   | insufficient data continues
   v
-suggest_outfit(new_item=selected_item, wardrobe=session["wardrobe"])
+Wardrobe copy with style_profile attached
+  |
+  | original wardrobe stays unchanged
+  v
+suggest_outfit(new_item=selected_item, wardrobe=wardrobe_with_profile)
   |
   | outfit suggestion string
   v
@@ -278,6 +346,10 @@ I will use the finished implementation, README, implementation plan, and interac
 ### Phase 8: Add price comparison stretch tool
 
 I will use the Tool 4 specification, the state table, and the app output contract. I will implement `compare_price` as a local deterministic function that does not call the network, ranks comparable listings with weighted similarity, excludes the selected listing by `id`, and returns a structured assessment dict. I will update `run_agent` to store `session["price_comparison"]` after selecting the item and before generating the outfit. I will add one readable price assessment panel to the interface without redesigning the rest of the app. Tests should verify scoring, calculations, insufficient data, agent state flow, and app formatting. I will review the implementation output against the plan, run the test suite, manually compare an actual listing, and launch the app to confirm the panel appears.
+
+### Phase 9: Add style profile memory
+
+I will use the Style Profile Memory section, the storage approach, and the existing session structure. I will create `style_profile.py` with `load_style_profile`, `save_style_profile`, `update_style_profile`, `extract_style_preferences`, and `clear_style_profile`. I will store runtime data in ignored `data/style_profile.local.json`, load and update it at the start of `run_agent`, attach the normalized profile to a wardrobe copy before calling `suggest_outfit`, and add a compact profile display plus a clear control in the interface. Tests should verify helper behavior, prompt context, agent state flow, app output order, clear action, and the two-interaction memory proof. I will revise any part that stores unsupported data, mutates the original wardrobe, changes required tool signatures, blocks the main workflow on storage failure, or weakens price comparison.
 
 ## Complete Interaction Walkthrough
 
@@ -397,3 +469,57 @@ The user sees the top listing details, the price assessment, the outfit suggesti
 `I could not find any matching secondhand listings for that request. Try widening the size, raising the price limit, or using fewer style words.`
 
 `compare_price`, `suggest_outfit`, and `create_fit_card` are not called. `session["selected_item"]`, `session["price_comparison"]`, `session["outfit_suggestion"]`, and `session["fit_card"]` remain `None`.
+
+### Style profile memory two interaction walkthrough
+
+**Interaction one query:** `"I usually wear neutral colors, oversized tops, baggy jeans, and chunky sneakers. Find me a vintage graphic tee under $30 in size M."`
+
+**Interaction one profile handling**
+- Tool called: none.
+- Helper functions called: `load_style_profile()`, `extract_style_preferences(query)`, `update_style_profile(current_profile, new_preferences)`, and `save_style_profile(updated_profile)`.
+- Example extracted preferences:
+
+```python
+{
+    "preferred_colors": ["neutral"],
+    "preferred_styles": [],
+    "preferred_fits": ["oversized"],
+    "preferred_shoes": ["chunky sneakers"],
+    "preferred_bottoms": ["baggy jeans"],
+    "preferred_layers": [],
+}
+```
+
+- State keys updated: `session["style_profile"]`, `session["style_profile_updated"]`, and `session["style_profile_message"]`.
+- Expected result: the runtime profile stores neutral colors, oversized fit, baggy jeans, and chunky sneakers.
+
+**Interaction one outfit generation**
+- `run_agent` attaches the updated profile to a wardrobe copy.
+- `suggest_outfit` sees owned wardrobe items separately from saved preferences.
+- The outfit prompt includes saved preferences and asks the outfit suggestion to use them without claiming they are owned clothing.
+
+**Interaction two query:** `"Find me a denim jacket under $45 in size M."`
+
+**Interaction two profile handling**
+- Tool called: none.
+- Helper functions called: `load_style_profile()` and `extract_style_preferences(query)`.
+- Example extracted preferences:
+
+```python
+{
+    "preferred_colors": [],
+    "preferred_styles": [],
+    "preferred_fits": [],
+    "preferred_shoes": [],
+    "preferred_bottoms": [],
+    "preferred_layers": [],
+}
+```
+
+- State keys updated: `session["style_profile"]`, `session["style_profile_updated"]`, and `session["style_profile_message"]`.
+- Expected result: the saved profile loads without the user repeating neutral colors, oversized fit, baggy jeans, or chunky sneakers.
+
+**Interaction two outfit generation**
+- `run_agent` attaches the loaded profile to a wardrobe copy.
+- `suggest_outfit` receives the saved preferences from interaction one.
+- The second outfit suggestion can use neutral colors, oversized fit, baggy jeans, and chunky sneakers even though the second query only asks for a denim jacket.

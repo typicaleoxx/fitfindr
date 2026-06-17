@@ -1,5 +1,9 @@
-# API keys — never commit these
+# API keys - never commit these
 .env
+
+# Local style memory
+data/style_profile.local.json
+data/style_profile.local.json.tmp
 
 # Python
 __pycache__/

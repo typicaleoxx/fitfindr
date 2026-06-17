@@ -25,7 +25,7 @@ from utils.data_loader import load_listings
 load_dotenv()
 
 
-# ── Groq client ───────────────────────────────────────────────────────────────
+# groq client
 
 def _get_groq_client():
     """Initialize and return a Groq client using GROQ_API_KEY from .env."""
@@ -37,7 +37,7 @@ def _get_groq_client():
     return Groq(api_key=api_key)
 
 
-# ── Tool 1: search_listings ───────────────────────────────────────────────────
+# tool 1: search_listings
 
 def search_listings(
     description: str,
@@ -148,7 +148,7 @@ def search_listings(
     return [listing for _, _, _, listing in scored_listings]
 
 
-# ── Tool 4: compare_price ────────────────────────────────────────────────────
+# tool 4: compare_price
 
 def _usable_price(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -367,7 +367,34 @@ def compare_price(new_item: dict, listings: list[dict] | None = None) -> dict:
     )
 
 
-# ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
+def _format_style_profile(profile: dict | None) -> str:
+    if not isinstance(profile, dict):
+        return "No saved style preferences."
+
+    profile_labels = [
+        ("Preferred colors", "preferred_colors"),
+        ("Preferred styles", "preferred_styles"),
+        ("Preferred fits", "preferred_fits"),
+        ("Preferred shoes", "preferred_shoes"),
+        ("Preferred bottoms", "preferred_bottoms"),
+        ("Preferred layers", "preferred_layers"),
+    ]
+    profile_lines = []
+    for label, field in profile_labels:
+        values = [
+            str(value).strip()
+            for value in profile.get(field, [])
+            if str(value).strip()
+        ]
+        if values:
+            profile_lines.append(f"- {label}: {', '.join(values)}")
+
+    if not profile_lines:
+        return "No saved style preferences."
+    return "\n".join(profile_lines)
+
+
+# tool 2: suggest_outfit
 
 def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
     """
@@ -417,6 +444,9 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
         wardrobe_items = [
             item for item in wardrobe.get("items", []) if isinstance(item, dict)
         ]
+    style_profile_text = _format_style_profile(
+        wardrobe.get("style_profile") if isinstance(wardrobe, dict) else None
+    )
 
     if wardrobe_items:
         wardrobe_lines = []
@@ -451,12 +481,17 @@ Selected listing:
 User wardrobe:
 {wardrobe_text}
 
+Saved style preferences:
+{style_profile_text}
+
 Instructions:
 - Return only the outfit suggestion.
 - Suggest one or two complete outfit combinations.
 - Make the outfit specific to the selected listing.
 - Include practical details like layering, shoes, accessories, color balance, or fit.
 - {wardrobe_instruction}
+- Use saved style preferences when they are available.
+- Do not describe saved style preferences as clothing the user owns.
 - Keep the response concise and natural.
 """.strip()
 
@@ -499,7 +534,7 @@ Instructions:
     return outfit_text
 
 
-# ── Tool 3: create_fit_card ───────────────────────────────────────────────────
+# tool 3: create_fit_card
 
 def create_fit_card(outfit: str, new_item: dict) -> str:
     """

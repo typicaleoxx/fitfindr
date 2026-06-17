@@ -19,11 +19,19 @@ Usage (once implemented):
 """
 
 import re
+from copy import deepcopy
 
+from style_profile import (
+    extract_style_preferences,
+    has_style_preferences,
+    load_style_profile,
+    save_style_profile,
+    update_style_profile,
+)
 from tools import compare_price, create_fit_card, search_listings, suggest_outfit
 
 
-# ── session state ─────────────────────────────────────────────────────────────
+# session state
 
 def _new_session(query: str, wardrobe: dict) -> dict:
     """
@@ -37,6 +45,9 @@ def _new_session(query: str, wardrobe: dict) -> dict:
     """
     return {
         "query": query,              # original user query
+        "style_profile": None,       # normalized saved style preferences
+        "style_profile_updated": False,
+        "style_profile_message": "",
         "parsed": {},                # extracted description / size / max_price
         "search_results": [],        # list of matching listing dicts
         "selected_item": None,       # top result, passed into suggest_outfit
@@ -48,7 +59,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
     }
 
 
-# ── planning loop ─────────────────────────────────────────────────────────────
+# planning loop
 
 def _parse_query(query: str) -> dict:
     """
@@ -110,6 +121,28 @@ def _tool_text_failed(value: str | None) -> bool:
     return any(signal in value_lower for signal in failure_signals)
 
 
+def _prepare_style_profile(query: str) -> tuple[dict, bool, str]:
+    # load saved preferences before checking the current request
+    loaded_profile = load_style_profile()
+    new_preferences = extract_style_preferences(query)
+
+    if not has_style_preferences(new_preferences):
+        if has_style_preferences(loaded_profile):
+            return loaded_profile, False, "Loaded saved style profile."
+        return loaded_profile, False, "No saved style preferences yet."
+
+    # merge new preferences without removing earlier style choices
+    updated_profile = update_style_profile(loaded_profile, new_preferences)
+    if save_style_profile(updated_profile):
+        return updated_profile, True, "Style profile updated from this request."
+
+    return (
+        updated_profile,
+        False,
+        "Style profile could not be saved, but the search can continue.",
+    )
+
+
 def run_agent(query: str, wardrobe: dict) -> dict:
     """
     Main agent entry point. Runs the FitFindr planning loop for a single
@@ -158,6 +191,13 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     # initialize one session object so each tool can pass its result forward
     session = _new_session(query, wardrobe)
 
+    # keep style memory optional so storage never blocks the main workflow
+    (
+        session["style_profile"],
+        session["style_profile_updated"],
+        session["style_profile_message"],
+    ) = _prepare_style_profile(query)
+
     # parse only the filters this starter app expects
     session["parsed"] = _parse_query(query)
 
@@ -185,9 +225,15 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         new_item=session["selected_item"],
     )
 
+    # add the profile to a wardrobe copy so the original input stays unchanged
+    wardrobe_with_profile = deepcopy(session["wardrobe"])
+    if not isinstance(wardrobe_with_profile, dict):
+        wardrobe_with_profile = {"items": []}
+    wardrobe_with_profile["style_profile"] = session["style_profile"]
+
     outfit_suggestion = suggest_outfit(
         new_item=session["selected_item"],
-        wardrobe=session["wardrobe"],
+        wardrobe=wardrobe_with_profile,
     )
     session["outfit_suggestion"] = outfit_suggestion
 
@@ -215,7 +261,7 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     return session
 
 
-# ── CLI test ──────────────────────────────────────────────────────────────────
+# cli test
 
 if __name__ == "__main__":
     from utils.data_loader import get_example_wardrobe, get_empty_wardrobe

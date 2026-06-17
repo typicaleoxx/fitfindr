@@ -1,9 +1,37 @@
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest
+
 import agent
+import style_profile
+
+
+def empty_profile():
+    return {
+        "preferred_colors": [],
+        "preferred_styles": [],
+        "preferred_fits": [],
+        "preferred_shoes": [],
+        "preferred_bottoms": [],
+        "preferred_layers": [],
+        "updated_at": "",
+    }
+
+
+@pytest.fixture(autouse=True)
+def isolate_style_profile(monkeypatch):
+    monkeypatch.setattr(agent, "load_style_profile", empty_profile)
+    monkeypatch.setattr(agent, "extract_style_preferences", lambda query: empty_profile())
+    monkeypatch.setattr(
+        agent,
+        "update_style_profile",
+        lambda current_profile, new_preferences: current_profile,
+    )
+    monkeypatch.setattr(agent, "save_style_profile", lambda profile: True)
 
 
 def sample_item(item_id="lst_test"):
@@ -34,6 +62,16 @@ def sample_price_comparison():
         "reason": "This listing is below the average price.",
         "comparable_items": [],
     }
+
+
+def sample_style_profile():
+    profile = empty_profile()
+    profile["preferred_colors"] = ["neutral"]
+    profile["preferred_fits"] = ["oversized"]
+    profile["preferred_shoes"] = ["chunky sneakers"]
+    profile["preferred_bottoms"] = ["baggy jeans"]
+    profile["updated_at"] = "2026-01-01T00:00:00Z"
+    return profile
 
 
 def test_successful_interaction_calls_all_tools_once(monkeypatch):
@@ -128,6 +166,232 @@ def test_outfit_state_flows_into_fit_card(monkeypatch):
     assert seen["fit_card_outfit"] is session["outfit_suggestion"]
     assert seen["fit_card_item"] is session["selected_item"]
     assert session["fit_card"] == "Fit card text."
+
+
+def test_profile_loads_before_outfit_generation(monkeypatch):
+    selected_item = sample_item()
+    calls = []
+
+    def fake_load_style_profile():
+        calls.append("load_profile")
+        return sample_style_profile()
+
+    def fake_suggest_outfit(new_item, wardrobe):
+        calls.append("outfit")
+        return "Outfit"
+
+    monkeypatch.setattr(agent, "load_style_profile", fake_load_style_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    agent.run_agent("denim jacket", {"items": []})
+
+    assert calls == ["load_profile", "outfit"]
+
+
+def test_new_preferences_from_query_update_profile(monkeypatch):
+    selected_item = sample_item()
+    loaded_profile = empty_profile()
+    new_preferences = empty_profile()
+    new_preferences["preferred_colors"] = ["neutral"]
+    updated_profile = sample_style_profile()
+    seen = {}
+
+    monkeypatch.setattr(agent, "load_style_profile", lambda: loaded_profile)
+    monkeypatch.setattr(agent, "extract_style_preferences", lambda query: new_preferences)
+
+    def fake_update_style_profile(current_profile, preferences):
+        seen["current_profile"] = current_profile
+        seen["preferences"] = preferences
+        return updated_profile
+
+    def fake_save_style_profile(profile):
+        seen["saved_profile"] = profile
+        return True
+
+    monkeypatch.setattr(agent, "update_style_profile", fake_update_style_profile)
+    monkeypatch.setattr(agent, "save_style_profile", fake_save_style_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("neutral oversized tee", {"items": []})
+
+    assert seen["current_profile"] is loaded_profile
+    assert seen["preferences"] is new_preferences
+    assert seen["saved_profile"] is updated_profile
+    assert session["style_profile"] is updated_profile
+    assert session["style_profile_updated"] is True
+    assert "updated" in session["style_profile_message"].lower()
+
+
+def test_query_without_preferences_reuses_saved_profile(monkeypatch):
+    selected_item = sample_item()
+    saved_profile = sample_style_profile()
+    save_called = False
+
+    def fake_save_style_profile(profile):
+        nonlocal save_called
+        save_called = True
+        return True
+
+    monkeypatch.setattr(agent, "load_style_profile", lambda: saved_profile)
+    monkeypatch.setattr(agent, "extract_style_preferences", lambda query: empty_profile())
+    monkeypatch.setattr(agent, "save_style_profile", fake_save_style_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("Find me a denim jacket under $45", {"items": []})
+
+    assert session["style_profile"] is saved_profile
+    assert session["style_profile_updated"] is False
+    assert "loaded" in session["style_profile_message"].lower()
+    assert save_called is False
+
+
+def test_profile_is_stored_in_session_state(monkeypatch):
+    selected_item = sample_item()
+    saved_profile = sample_style_profile()
+
+    monkeypatch.setattr(agent, "load_style_profile", lambda: saved_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("denim jacket", {"items": []})
+
+    assert session["style_profile"] is saved_profile
+    assert session["style_profile_updated"] is False
+    assert isinstance(session["style_profile_message"], str)
+
+
+def test_original_wardrobe_is_not_mutated_by_profile_context(monkeypatch):
+    selected_item = sample_item()
+    wardrobe = {"items": [{"name": "jeans"}]}
+    original_wardrobe = deepcopy(wardrobe)
+
+    monkeypatch.setattr(agent, "load_style_profile", sample_style_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    agent.run_agent("denim jacket", wardrobe)
+
+    assert wardrobe == original_wardrobe
+    assert "style_profile" not in wardrobe
+
+
+def test_suggest_outfit_receives_wardrobe_copy_with_style_profile(monkeypatch):
+    selected_item = sample_item()
+    wardrobe = {"items": [{"name": "jeans"}]}
+    saved_profile = sample_style_profile()
+    seen = {}
+
+    monkeypatch.setattr(agent, "load_style_profile", lambda: saved_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+
+    def fake_suggest_outfit(new_item, wardrobe):
+        seen["wardrobe"] = wardrobe
+        return "Outfit"
+
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    agent.run_agent("denim jacket", wardrobe)
+
+    assert seen["wardrobe"] is not wardrobe
+    assert seen["wardrobe"]["items"] == wardrobe["items"]
+    assert seen["wardrobe"]["style_profile"] is saved_profile
+
+
+def test_profile_save_failure_does_not_stop_required_workflow(monkeypatch):
+    selected_item = sample_item()
+    new_preferences = empty_profile()
+    new_preferences["preferred_fits"] = ["oversized"]
+    updated_profile = sample_style_profile()
+
+    monkeypatch.setattr(agent, "extract_style_preferences", lambda query: new_preferences)
+    monkeypatch.setattr(agent, "update_style_profile", lambda current, new: updated_profile)
+    monkeypatch.setattr(agent, "save_style_profile", lambda profile: False)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: [selected_item])
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", lambda new_item, wardrobe: "Outfit")
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    session = agent.run_agent("oversized vintage tee", {"items": []})
+
+    assert session["style_profile"] is updated_profile
+    assert session["style_profile_updated"] is False
+    assert "could not be saved" in session["style_profile_message"]
+    assert session["selected_item"] is selected_item
+    assert session["price_comparison"] == sample_price_comparison()
+    assert session["outfit_suggestion"] == "Outfit"
+    assert session["fit_card"] == "Card"
+    assert session["error"] is None
+
+
+def test_two_interactions_reuse_saved_style_preferences(monkeypatch):
+    first_item = sample_item("first")
+    second_item = sample_item("second")
+    search_results = [[first_item], [second_item]]
+    profile_store = empty_profile()
+    seen_profiles = []
+
+    def fake_load_style_profile():
+        return deepcopy(profile_store)
+
+    def fake_save_style_profile(profile):
+        profile_store.clear()
+        profile_store.update(deepcopy(profile))
+        return True
+
+    def fake_suggest_outfit(new_item, wardrobe):
+        seen_profiles.append(deepcopy(wardrobe["style_profile"]))
+        if len(seen_profiles) == 2:
+            return "Use the denim jacket with baggy jeans and chunky sneakers."
+        return "Wear the tee with neutral colors and chunky sneakers."
+
+    monkeypatch.setattr(agent, "load_style_profile", fake_load_style_profile)
+    monkeypatch.setattr(agent, "save_style_profile", fake_save_style_profile)
+    monkeypatch.setattr(agent, "extract_style_preferences", style_profile.extract_style_preferences)
+    monkeypatch.setattr(agent, "update_style_profile", style_profile.update_style_profile)
+    monkeypatch.setattr(agent, "search_listings", lambda **kwargs: search_results.pop(0))
+    monkeypatch.setattr(agent, "compare_price", lambda new_item: sample_price_comparison())
+    monkeypatch.setattr(agent, "suggest_outfit", fake_suggest_outfit)
+    monkeypatch.setattr(agent, "create_fit_card", lambda outfit, new_item: "Card")
+
+    first_session = agent.run_agent(
+        (
+            "I usually wear neutral colors, oversized tops, baggy jeans, and "
+            "chunky sneakers. Find me a vintage graphic tee under $30 in size M."
+        ),
+        {"items": []},
+    )
+    second_session = agent.run_agent(
+        "Find me a denim jacket under $45 in size M.",
+        {"items": []},
+    )
+
+    assert profile_store["preferred_colors"] == ["neutral"]
+    assert profile_store["preferred_fits"] == ["oversized"]
+    assert profile_store["preferred_bottoms"] == ["baggy jeans"]
+    assert profile_store["preferred_shoes"] == ["chunky sneakers"]
+    assert first_session["style_profile_updated"] is True
+    assert second_session["style_profile_updated"] is False
+    assert seen_profiles[1]["preferred_colors"] == ["neutral"]
+    assert seen_profiles[1]["preferred_fits"] == ["oversized"]
+    assert seen_profiles[1]["preferred_bottoms"] == ["baggy jeans"]
+    assert seen_profiles[1]["preferred_shoes"] == ["chunky sneakers"]
+    assert "baggy jeans" in second_session["outfit_suggestion"]
+    assert "chunky sneakers" in second_session["outfit_suggestion"]
 
 
 def test_insufficient_price_data_does_not_stop_outfit_or_fit_card(monkeypatch):

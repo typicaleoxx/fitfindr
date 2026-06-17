@@ -15,10 +15,11 @@ but check your terminal — the port may differ).
 import gradio as gr
 
 from agent import run_agent
+from style_profile import clear_style_profile, empty_style_profile
 from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
 
 
-# ── query handler ─────────────────────────────────────────────────────────────
+# query handler
 
 def _format_listing(listing: dict | None) -> str:
     """Format a selected listing for the first output panel."""
@@ -77,7 +78,71 @@ def _format_price_comparison(price_comparison: dict | None) -> str:
     return "\n".join(lines)
 
 
-def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str]:
+def _format_style_profile(
+    style_profile: dict | None,
+    updated: bool = False,
+    message: str = "",
+) -> str:
+    """Format saved style preferences for the profile output panel."""
+    labels = [
+        ("Colors", "preferred_colors"),
+        ("Styles", "preferred_styles"),
+        ("Fits", "preferred_fits"),
+        ("Shoes", "preferred_shoes"),
+        ("Bottoms", "preferred_bottoms"),
+        ("Layers", "preferred_layers"),
+    ]
+    profile = style_profile if isinstance(style_profile, dict) else {}
+    lines = ["Saved style profile"]
+    has_values = False
+
+    for label, field in labels:
+        values = [
+            str(value).strip()
+            for value in profile.get(field, [])
+            if str(value).strip()
+        ]
+        if values:
+            has_values = True
+            lines.append(f"{label}: {', '.join(values)}")
+        else:
+            lines.append(f"{label}: none")
+
+    if not has_values:
+        lines.append("")
+        lines.append("No saved preferences yet.")
+
+    lines.append("")
+    lines.append(f"Updated this request: {'yes' if updated else 'no'}")
+    if message:
+        lines.append(message)
+
+    return "\n".join(lines)
+
+
+def handle_clear_style_profile() -> tuple[str, str]:
+    # clear the saved profile without touching other application data
+    if clear_style_profile():
+        return (
+            _format_style_profile(
+                empty_style_profile(),
+                updated=False,
+                message="Style profile cleared.",
+            ),
+            "Style profile cleared.",
+        )
+
+    return (
+        _format_style_profile(
+            empty_style_profile(),
+            updated=False,
+            message="Style profile could not be cleared.",
+        ),
+        "Style profile could not be cleared.",
+    )
+
+
+def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, str, str]:
     """
     Called by Gradio when the user submits a query.
 
@@ -86,9 +151,9 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
         wardrobe_choice: Either "Example wardrobe" or "Empty wardrobe (new user)".
 
     Returns:
-        A tuple of four strings:
-            (listing_text, price_comparison, outfit_suggestion, fit_card)
-        Each string maps to one of the four output panels in the UI.
+        A tuple of five strings:
+            (listing_text, style_profile, price_comparison, outfit_suggestion, fit_card)
+        Each string maps to one of the five output panels in the UI.
 
     TODO:
         1. Guard against an empty query (return early with an error message).
@@ -109,6 +174,7 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
             "",
             "",
             "",
+            "",
         )
 
     # choose the starter wardrobe state from the existing radio options
@@ -119,6 +185,11 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
 
     session = run_agent(query=query, wardrobe=wardrobe)
     listing_text = _format_listing(session.get("selected_item"))
+    profile_text = _format_style_profile(
+        session.get("style_profile"),
+        updated=bool(session.get("style_profile_updated")),
+        message=(session.get("style_profile_message") or "").strip(),
+    )
     price_text = _format_price_comparison(session.get("price_comparison"))
     outfit_text = (session.get("outfit_suggestion") or "").strip()
     fit_card_text = (session.get("fit_card") or "").strip()
@@ -127,26 +198,27 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str, 
     # clear later outputs when the agent stops on an earlier failure
     if error_text:
         if not session.get("selected_item"):
-            return error_text, "", "", ""
+            return error_text, profile_text, "", "", ""
         if not fit_card_text:
             if "fit card" in error_text.lower():
-                return listing_text, price_text, outfit_text, error_text
-            return listing_text, price_text, error_text, ""
+                return listing_text, profile_text, price_text, outfit_text, error_text
+            return listing_text, profile_text, price_text, error_text, ""
         if not outfit_text:
-            return listing_text, price_text, error_text, ""
+            return listing_text, profile_text, price_text, error_text, ""
         if "fit card" in error_text.lower():
-            return listing_text, price_text, outfit_text, error_text
+            return listing_text, profile_text, price_text, outfit_text, error_text
 
     # return values in the same order as the gradio output components
     return (
         listing_text,
+        profile_text,
         price_text,
         outfit_text or "No outfit suggestion is available.",
         fit_card_text or "No fit card is available.",
     )
 
 
-# ── interface ─────────────────────────────────────────────────────────────────
+# interface
 
 EXAMPLE_QUERIES = [
     "vintage graphic tee under $30",
@@ -179,10 +251,16 @@ Describe what you're looking for — include size and price if you want to filte
             )
 
         submit_btn = gr.Button("Find it", variant="primary")
+        clear_profile_btn = gr.Button("Clear Style Profile")
 
         with gr.Row():
             listing_output = gr.Textbox(
                 label="🛍️ Top listing found",
+                lines=8,
+                interactive=False,
+            )
+            profile_output = gr.Textbox(
+                label="Saved style profile",
                 lines=8,
                 interactive=False,
             )
@@ -201,6 +279,11 @@ Describe what you're looking for — include size and price if you want to filte
                 lines=8,
                 interactive=False,
             )
+        clear_status = gr.Textbox(
+            label="Style profile status",
+            lines=1,
+            interactive=False,
+        )
 
         gr.Examples(
             examples=[[q, "Example wardrobe"] for q in EXAMPLE_QUERIES],
@@ -211,12 +294,29 @@ Describe what you're looking for — include size and price if you want to filte
         submit_btn.click(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, price_output, outfit_output, fitcard_output],
+            outputs=[
+                listing_output,
+                profile_output,
+                price_output,
+                outfit_output,
+                fitcard_output,
+            ],
         )
         query_input.submit(
             fn=handle_query,
             inputs=[query_input, wardrobe_choice],
-            outputs=[listing_output, price_output, outfit_output, fitcard_output],
+            outputs=[
+                listing_output,
+                profile_output,
+                price_output,
+                outfit_output,
+                fitcard_output,
+            ],
+        )
+        clear_profile_btn.click(
+            fn=handle_clear_style_profile,
+            inputs=[],
+            outputs=[profile_output, clear_status],
         )
 
     return demo

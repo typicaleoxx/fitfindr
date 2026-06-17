@@ -355,6 +355,58 @@ def test_suggest_outfit_empty_wardrobe_returns_general_advice(monkeypatch):
     assert "Do not claim the user owns specific pieces." in prompt
 
 
+def test_suggest_outfit_prompt_includes_style_profile_information(monkeypatch):
+    client, completions = fake_client_with("Use saved preferences in the outfit.")
+    wardrobe = get_empty_wardrobe()
+    wardrobe["style_profile"] = {
+        "preferred_colors": ["neutral"],
+        "preferred_styles": ["vintage"],
+        "preferred_fits": ["oversized"],
+        "preferred_shoes": ["chunky sneakers"],
+        "preferred_bottoms": ["baggy jeans"],
+        "preferred_layers": [],
+        "updated_at": "2026-01-01T00:00:00Z",
+    }
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    suggest_outfit(selected_graphic_tee(), wardrobe)
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert "Saved style preferences:" in prompt
+    assert "Preferred colors: neutral" in prompt
+    assert "Preferred fits: oversized" in prompt
+    assert "Preferred shoes: chunky sneakers" in prompt
+    assert "Preferred bottoms: baggy jeans" in prompt
+
+
+def test_suggest_outfit_missing_style_profile_does_not_break_existing_behavior(monkeypatch):
+    client, completions = fake_client_with("Style it with denim.")
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    result = suggest_outfit(selected_graphic_tee(), get_example_wardrobe())
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert result == "Style it with denim."
+    assert "No saved style preferences." in prompt
+
+
+def test_suggest_outfit_does_not_treat_saved_preferences_as_owned_items(monkeypatch):
+    client, completions = fake_client_with("Use saved preferences in the outfit.")
+    wardrobe = get_empty_wardrobe()
+    wardrobe["style_profile"] = {
+        "preferred_bottoms": ["baggy jeans"],
+        "preferred_shoes": ["chunky sneakers"],
+    }
+    monkeypatch.setattr(tools, "_get_groq_client", lambda: client)
+
+    suggest_outfit(selected_graphic_tee(), wardrobe)
+    prompt = completions.calls[0]["messages"][1]["content"]
+
+    assert "User wardrobe:\nNo usable wardrobe items were provided." in prompt
+    assert "Saved style preferences:" in prompt
+    assert "Do not describe saved style preferences as clothing the user owns." in prompt
+
+
 def test_suggest_outfit_missing_item_returns_specific_error():
     result = suggest_outfit({}, get_example_wardrobe())
 
